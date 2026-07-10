@@ -246,6 +246,77 @@ describe("playback routes", () => {
     await app.close();
   });
 
+  it("prepares a forced VP9/Opus WebM stream when preferredPlayMethod is webm", async () => {
+    const app = await buildPlaybackApp();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input.toString();
+
+      if (url === "https://jellyfin.example.com/Users/AuthenticateByName") {
+        return authResponse();
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
+        return jsonResponse({
+          MediaSources: [{
+            Id: "media-1",
+            SupportsTranscoding: true,
+            MediaStreams: [
+              { Type: "Video", Codec: "hevc", Index: 0 },
+              { Type: "Audio", Codec: "truehd", Index: 1 }
+            ]
+          }]
+        });
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Videos/movie-1/stream.webm")) {
+        const parsed = new URL(url);
+        const headers = new Headers(init?.headers);
+
+        expect(parsed.searchParams.get("VideoCodec")).toBe("vp9");
+        expect(parsed.searchParams.get("AudioCodec")).toBe("opus");
+        expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
+
+        return textResponse("webm", 200, "video/webm");
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const appToken = await linkAccount(app);
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/playback/prepare",
+      headers: {
+        authorization: `Bearer ${appToken}`
+      },
+      payload: {
+        itemId: "movie-1",
+        preferredPlayMethod: "webm"
+      }
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json().playback).toMatchObject({
+      playMethod: "direct",
+      container: "webm",
+      videoCodec: "vp9",
+      audioCodec: "opus"
+    });
+    expect(prepared.json().playback.streamUrl).toMatch(/^\/media\/direct\/.+\/stream\.webm$/);
+
+    const stream = await app.inject({
+      method: "GET",
+      url: prepared.json().playback.streamUrl as string
+    });
+
+    expect(stream.statusCode).toBe(200);
+    expect(stream.headers["content-type"]).toContain("video/webm");
+    expect(stream.body).toBe("webm");
+
+    await app.close();
+  });
+
   it("forces HLS when preferredPlayMethod is hls even if remux is available", async () => {
     const app = await buildPlaybackApp();
 

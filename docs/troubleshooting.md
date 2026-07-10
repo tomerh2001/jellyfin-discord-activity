@@ -145,8 +145,14 @@ If the Linux Discord client fails while Chrome or Windows Discord works:
 1. Linux Discord often rejects **static remux** progressive files with `MEDIA_ERR_SRC_NOT_SUPPORTED` even for H.264/AAC sources.
 2. The Linux client therefore **forces HLS** (`preferredPlayMethod=hls`) so the backend does not return static remux.
 3. hls.js workers stay disabled (Discord iframes are unreliable with workers).
-4. If HLS still fails, only that client retries with `preferredPlayMethod=direct`, which forces a **re-encoded** progressive H.264/AAC MP4 (not remux of the original file).
-5. Open **Show diagnostics** / **Copy diagnostics** under the player and share the JSON when reporting playback bugs. Look for `preferredPlayMethod`, `playMethod`, and `lastError`.
+4. Per-client fallback ladder (other viewers are unchanged):
+   - `hls` → forced progressive H.264/AAC MP4 (`direct`) → forced progressive VP9/Opus WebM (`webm`)
+5. Open **Show diagnostics** / **Copy diagnostics** under the player. The JSON now includes:
+   - `fallbackChain` — methods attempted in order
+   - `attempts[]` — prepare / stream probe / attach / hls info / errors / fallback steps
+   - `capabilities` — `canPlayH264`, `canPlayVp9`, MSE/hls.js support
+   - `lastError` — most recent failure
+6. If `capabilities.canPlayH264` is empty/`no`, the client likely lacks proprietary codecs and needs the WebM step (or a Discord build with H.264).
 
 ## Jellyfin Auth Mode Problems
 

@@ -3,7 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { preparePlayback } from "../api/client.js";
 import type { PlaybackPrepareResponse } from "../api/types.js";
 import { Button } from "../components/Button.js";
-import { attachVideoSource, prefersForcedHls } from "./hls.js";
+import {
+  attachVideoSource,
+  prefersForcedHls,
+  probeClientMediaCapabilities,
+  probeStreamUrl,
+  type ClientMediaCapabilities
+} from "./hls.js";
 import {
   correctionForDrift,
   type RemotePlayerEvent,
@@ -63,10 +69,32 @@ type PreflightState =
   | { status: "error"; message: string };
 
 type PreparedTrackState = PlaybackPrepareResponse["playback"] | undefined;
-type PreferredPlayMethod = "hls" | "direct";
+type PreferredPlayMethod = "hls" | "direct" | "webm";
+
+type PlaybackAttempt = {
+  at: string;
+  stage: "prepare" | "probe" | "attach" | "info" | "error" | "fallback" | "success" | "renew";
+  preferredPlayMethod: PreferredPlayMethod;
+  playMethod?: "hls" | "direct" | undefined;
+  streamUrl?: string | undefined;
+  container?: string | undefined;
+  videoCodec?: string | undefined;
+  audioCodec?: string | undefined;
+  message?: string | undefined;
+  probe?: {
+    ok: boolean;
+    status?: number;
+    contentType?: string;
+    acceptRanges?: string;
+    error?: string;
+  };
+};
 
 type PlaybackDiagnostics = {
   preferredPlayMethod: PreferredPlayMethod;
+  fallbackChain: PreferredPlayMethod[];
+  attempts: PlaybackAttempt[];
+  capabilities?: ClientMediaCapabilities | undefined;
   lastError?: string | undefined;
   lastPrepareAt?: string | undefined;
   playMethod?: "hls" | "direct" | undefined;
@@ -78,11 +106,47 @@ type PlaybackDiagnostics = {
   userAgent?: string | undefined;
 };
 
-function initialDiagnostics(method: PreferredPlayMethod): PlaybackDiagnostics {
+function initialDiagnostics(method: PreferredPlayMethod, video?: HTMLVideoElement | null): PlaybackDiagnostics {
   return {
     preferredPlayMethod: method,
+    fallbackChain: [method],
+    attempts: [{
+      at: new Date().toISOString(),
+      stage: "info",
+      preferredPlayMethod: method,
+      message: "Player reset; starting playback ladder."
+    }],
+    capabilities: probeClientMediaCapabilities(video),
     ...(typeof navigator !== "undefined" ? { userAgent: navigator.userAgent } : {})
   };
+}
+
+function nextFallbackMethod(current: PreferredPlayMethod): PreferredPlayMethod | undefined {
+  if (current === "hls") {
+    return "direct";
+  }
+
+  if (current === "direct") {
+    return "webm";
+  }
+
+  return undefined;
+}
+
+function methodNotice(method: PreferredPlayMethod, forceHls: boolean): string | undefined {
+  if (method === "webm") {
+    return "Trying VP9/Opus WebM compatibility stream (H.264 may be unavailable in this client).";
+  }
+
+  if (method === "direct") {
+    return "Trying forced H.264/AAC progressive MP4.";
+  }
+
+  if (forceHls) {
+    return "Linux Discord: preparing segmented HLS (skipping static remux).";
+  }
+
+  return undefined;
 }
 
 const ticketRenewLeadMs = 60_000;
@@ -109,9 +173,11 @@ export function WatchPlayer({
   const videoFrameRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | undefined>(undefined);
   const preparedKeyRef = useRef<string | undefined>(undefined);
-  const activePlayMethodRef = useRef<PreferredPlayMethod | undefined>(undefined);
+  const activeStageRef = useRef<PreferredPlayMethod>("hls");
   const suppressEventsUntilRef = useRef(0);
   const renewInFlightRef = useRef(false);
+  const loggedPlaySuccessRef = useRef(false);
+  const diagnosticsRef = useRef<PlaybackDiagnostics>(initialDiagnostics("hls"));
   const [playerState, setPlayerState] = useState<PlayerState>({ status: "idle" });
   const [playerNotice, setPlayerNotice] = useState<string | undefined>();
   const [stagedPlayback, setStagedPlayback] = useState<PreparedTrackState>();
@@ -126,21 +192,40 @@ export function WatchPlayer({
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | undefined>();
 
+  function pushAttempt(attempt: Omit<PlaybackAttempt, "at">): void {
+    const entry: PlaybackAttempt = {
+      ...attempt,
+      at: new Date().toISOString()
+    };
+    setDiagnostics((current) => {
+      const next: PlaybackDiagnostics = {
+        ...current,
+        preferredPlayMethod: attempt.preferredPlayMethod,
+        attempts: [...current.attempts, entry],
+        ...(attempt.stage === "error" ? { lastError: attempt.message } : {}),
+        ...(attempt.playMethod ? { playMethod: attempt.playMethod } : {}),
+        ...(attempt.streamUrl ? { streamUrl: attempt.streamUrl } : {}),
+        ...(attempt.videoCodec ? { videoCodec: attempt.videoCodec } : {}),
+        ...(attempt.audioCodec ? { audioCodec: attempt.audioCodec } : {})
+      };
+      diagnosticsRef.current = next;
+      return next;
+    });
+  }
+
   useEffect(() => {
     cleanupRef.current?.();
     cleanupRef.current = undefined;
     preparedKeyRef.current = undefined;
-    activePlayMethodRef.current = undefined;
+    activeStageRef.current = "hls";
     renewInFlightRef.current = false;
+    loggedPlaySuccessRef.current = false;
     setPlayerState({ status: "idle" });
-    setPlayerNotice(forceHlsOnThisClient
-      ? "Linux Discord: using segmented HLS (static remux is unsupported in this client)."
-      : undefined);
+    setPlayerNotice(methodNotice("hls", forceHlsOnThisClient));
     setPreferredPlayMethod("hls");
-    setDiagnostics({
-      ...initialDiagnostics("hls"),
-      ...(forceHlsOnThisClient ? { lastError: undefined } : {})
-    });
+    const reset = initialDiagnostics("hls", videoRef.current);
+    diagnosticsRef.current = reset;
+    setDiagnostics(reset);
     setCopyStatus(undefined);
   }, [forceHlsOnThisClient, itemId]);
 
@@ -275,22 +360,23 @@ export function WatchPlayer({
 
     async function prepareSelectedPlayback() {
       setPlayerState({ status: "preparing" });
-      setPlayerNotice(preferredPlayMethod === "direct"
-        ? "Using forced H.264/AAC progressive MP4 for this client."
-        : forceHlsOnThisClient
-          ? "Linux Discord: preparing segmented HLS."
-          : undefined);
+      setPlayerNotice(methodNotice(preferredPlayMethod, forceHlsOnThisClient));
+      activeStageRef.current = preferredPlayMethod;
+      pushAttempt({
+        stage: "prepare",
+        preferredPlayMethod,
+        message: `Preparing playback with preferredPlayMethod=${preferredPlayMethod}.`
+      });
       setDiagnostics((current) => ({
         ...current,
         preferredPlayMethod,
-        lastPrepareAt: new Date().toISOString()
+        lastPrepareAt: new Date().toISOString(),
+        capabilities: probeClientMediaCapabilities(videoRef.current)
       }));
 
       try {
-        // Always send preferredPlayMethod when the client needs a specific path:
-        // - Linux Discord: force "hls" so backend skips static remux
-        // - Fallback: "direct" forces re-encoded progressive MP4
-        const shouldSendPreferredMethod = preferredPlayMethod === "direct" || forceHlsOnThisClient;
+        // Send preferredPlayMethod for forced paths (Linux HLS, MP4/WebM fallbacks).
+        const shouldSendPreferredMethod = preferredPlayMethod !== "hls" || forceHlsOnThisClient;
         const response = await preparePlayback(token, {
           itemId: selectedItemId,
           ...(mediaSourceId ? { mediaSourceId } : {}),
@@ -306,9 +392,35 @@ export function WatchPlayer({
         const video = videoRef.current;
         const previousTime = video.currentTime;
         const wasPlaying = !video.paused && !video.ended;
+        const probe = await probeStreamUrl(response.playback.streamUrl);
+
+        pushAttempt({
+          stage: "probe",
+          preferredPlayMethod,
+          playMethod: response.playback.playMethod,
+          streamUrl: response.playback.streamUrl,
+          container: response.playback.container,
+          videoCodec: response.playback.videoCodec,
+          audioCodec: response.playback.audioCodec,
+          probe,
+          message: probe.ok
+            ? `Stream probe ok status=${probe.status} content-type=${probe.contentType ?? "n/a"}.`
+            : `Stream probe failed status=${probe.status ?? "n/a"} error=${probe.error ?? "n/a"}.`
+        });
+
         suppressEventsUntilRef.current = Date.now() + 2000;
         cleanupRef.current?.();
-        activePlayMethodRef.current = response.playback.playMethod;
+        activeStageRef.current = preferredPlayMethod;
+        pushAttempt({
+          stage: "attach",
+          preferredPlayMethod,
+          playMethod: response.playback.playMethod,
+          streamUrl: response.playback.streamUrl,
+          container: response.playback.container,
+          videoCodec: response.playback.videoCodec,
+          audioCodec: response.playback.audioCodec,
+          message: `Attaching ${response.playback.playMethod} source.`
+        });
         cleanupRef.current = attachVideoSource(video, {
           playMethod: response.playback.playMethod,
           streamUrl: response.playback.streamUrl
@@ -316,6 +428,15 @@ export function WatchPlayer({
           enableWorker: false,
           onError: (message) => {
             handlePlaybackSourceError(message);
+          },
+          onInfo: (message) => {
+            pushAttempt({
+              stage: "info",
+              preferredPlayMethod,
+              playMethod: response.playback.playMethod,
+              streamUrl: response.playback.streamUrl,
+              message
+            });
           }
         });
         if (previousTime > 0) {
@@ -353,14 +474,12 @@ export function WatchPlayer({
 
         preparedKeyRef.current = undefined;
         const message = error instanceof Error ? error.message : "Could not prepare playback.";
-        setPlayerState({
-          status: "error",
-          message
+        pushAttempt({
+          stage: "error",
+          preferredPlayMethod,
+          message: `Prepare failed: ${message}`
         });
-        setDiagnostics((current) => ({
-          ...current,
-          lastError: message
-        }));
+        handlePlaybackSourceError(`Prepare failed: ${message}`);
       }
     }
 
@@ -458,6 +577,16 @@ export function WatchPlayer({
           onPause={() => sendHostPlayerEvent("pause")}
           onPlay={() => {
             setPlayerNotice(undefined);
+            if (!loggedPlaySuccessRef.current) {
+              loggedPlaySuccessRef.current = true;
+              pushAttempt({
+                stage: "success",
+                preferredPlayMethod: activeStageRef.current,
+                playMethod: playerState.status === "ready" ? playerState.playMethod : undefined,
+                streamUrl: playerState.status === "ready" ? playerState.streamUrl : undefined,
+                message: "Video element fired play event."
+              });
+            }
             sendHostPlayerEvent("play");
           }}
           onSeeked={() => sendHostPlayerEvent("seek")}
@@ -565,18 +694,32 @@ export function WatchPlayer({
   }
 
   function handlePlaybackSourceError(message: string): void {
-    setDiagnostics((current) => ({
-      ...current,
-      lastError: message
-    }));
+    const stage = activeStageRef.current;
+    pushAttempt({
+      stage: "error",
+      preferredPlayMethod: stage,
+      message
+    });
 
-    if (activePlayMethodRef.current === "hls" && preferredPlayMethod !== "direct") {
+    const fallback = nextFallbackMethod(stage);
+    if (fallback) {
       preparedKeyRef.current = undefined;
       cleanupRef.current?.();
       cleanupRef.current = undefined;
-      activePlayMethodRef.current = undefined;
-      setPlayerNotice("HLS playback failed in this client. Trying forced H.264/AAC progressive MP4.");
-      setPreferredPlayMethod("direct");
+      pushAttempt({
+        stage: "fallback",
+        preferredPlayMethod: fallback,
+        message: `${stage} failed; falling back to ${fallback}. Cause: ${message}`
+      });
+      setDiagnostics((current) => ({
+        ...current,
+        fallbackChain: current.fallbackChain.includes(fallback)
+          ? current.fallbackChain
+          : [...current.fallbackChain, fallback],
+        lastError: message
+      }));
+      setPlayerNotice(methodNotice(fallback, forceHlsOnThisClient));
+      setPreferredPlayMethod(fallback);
       return;
     }
 
@@ -591,17 +734,18 @@ export function WatchPlayer({
     renewInFlightRef.current = true;
 
     try {
-      const renewMethod: PreferredPlayMethod = preferredPlayMethod === "direct" || playerState.playMethod === "direct"
-        ? "direct"
-        : forceHlsOnThisClient
-          ? "hls"
-          : preferredPlayMethod;
+      const renewMethod: PreferredPlayMethod = preferredPlayMethod;
+      pushAttempt({
+        stage: "renew",
+        preferredPlayMethod: renewMethod,
+        message: `Renewing stream ticket with preferredPlayMethod=${renewMethod}.`
+      });
       const response = await preparePlayback(appToken, {
         itemId,
         ...(mediaSourceId ? { mediaSourceId } : {}),
         ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
         ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
-        ...(renewMethod === "direct" || forceHlsOnThisClient ? { preferredPlayMethod: renewMethod } : {})
+        ...(renewMethod !== "hls" || forceHlsOnThisClient ? { preferredPlayMethod: renewMethod } : {})
       });
 
       const video = videoRef.current;
@@ -613,7 +757,7 @@ export function WatchPlayer({
       const wasPlaying = !video.paused && !video.ended;
       suppressEventsUntilRef.current = Date.now() + 2000;
       cleanupRef.current?.();
-      activePlayMethodRef.current = response.playback.playMethod;
+      activeStageRef.current = renewMethod;
       cleanupRef.current = attachVideoSource(video, {
         playMethod: response.playback.playMethod,
         streamUrl: response.playback.streamUrl
@@ -621,6 +765,15 @@ export function WatchPlayer({
         enableWorker: false,
         onError: (message) => {
           handlePlaybackSourceError(message);
+        },
+        onInfo: (message) => {
+          pushAttempt({
+            stage: "info",
+            preferredPlayMethod: renewMethod,
+            playMethod: response.playback.playMethod,
+            streamUrl: response.playback.streamUrl,
+            message
+          });
         }
       });
       if (previousTime > 0) {
@@ -655,10 +808,11 @@ export function WatchPlayer({
       setPlayerNotice(undefined);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not renew stream ticket.";
-      setDiagnostics((current) => ({
-        ...current,
-        lastError: message
-      }));
+      pushAttempt({
+        stage: "error",
+        preferredPlayMethod,
+        message: `Ticket renew failed: ${message}`
+      });
       setPlayerNotice("Stream ticket renewal failed. Playback may stop soon.");
     } finally {
       renewInFlightRef.current = false;

@@ -40,7 +40,7 @@ export type PlaybackInfoInput = {
   audioStreamIndex?: number | undefined;
   subtitleStreamIndex?: number | undefined;
   maxStreamingBitrate?: number | undefined;
-  preferredPlayMethod?: "hls" | "direct" | undefined;
+  preferredPlayMethod?: "hls" | "direct" | "webm" | undefined;
 };
 
 export type PreparedPlayback = {
@@ -171,8 +171,28 @@ function selectPlaybackMethod(
   };
   const remuxEligible = canRemuxBrowserSafe(source, videoCodec, audioCodec);
   const forceCompatDirect = input.preferredPlayMethod === "direct";
+  const forceCompatWebm = input.preferredPlayMethod === "webm";
   const forceDeploymentDirect = env.STREAM_PROXY_MODE === "direct";
   const forceHls = input.preferredPlayMethod === "hls";
+
+  // Client compatibility: progressive WebM (VP9/Opus) for clients that reject H.264
+  // (common on some Linux Electron builds without proprietary codecs).
+  if (forceCompatWebm) {
+    if (source.SupportsTranscoding !== false) {
+      return {
+        itemId: input.itemId,
+        mediaSourceId: source.Id,
+        playMethod: "direct",
+        upstreamPath: buildTranscodeWebmPath(env, input, source, playSessionId),
+        container: "webm",
+        videoCodec: "vp9",
+        audioCodec: "opus",
+        ...tracks
+      };
+    }
+
+    throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin could not prepare a WebM compatibility stream.", 200, source);
+  }
 
   // Client compatibility path: always re-encode to progressive H.264/AAC MP4.
   // Static remux of the original file is rejected by some Discord clients (Linux Electron)
@@ -434,6 +454,42 @@ function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: M
   params.set("Level", "41");
   params.set("CopyTimestamps", "true");
   params.set("EnableMpegtsM2TsMode", "false");
+
+  if (playSessionId) {
+    params.set("PlaySessionId", playSessionId);
+  }
+
+  if (input.audioStreamIndex !== undefined) {
+    params.set("AudioStreamIndex", String(input.audioStreamIndex));
+  }
+
+  if (isSelectedSubtitleStream(input.subtitleStreamIndex)) {
+    params.set("SubtitleStreamIndex", String(input.subtitleStreamIndex));
+    params.set("SubtitleMethod", "Encode");
+  }
+
+  return `${url.pathname}?${params.toString()}`;
+}
+
+function buildTranscodeWebmPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource, playSessionId?: string): string {
+  const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.webm`, "https://jellyfin.local");
+  const params = url.searchParams;
+  const quality = playbackQuality(env, input);
+  const streamingBitrate = Math.min(quality.maxStreamingBitrate, 8_000_000);
+  const audioBitrate = Math.min(160_000, Math.max(96_000, Math.floor(streamingBitrate * 0.04)));
+  const videoBitrate = Math.max(800_000, streamingBitrate - audioBitrate);
+
+  params.set("MediaSourceId", source.Id);
+  params.set("VideoCodec", "vp9");
+  params.set("AudioCodec", "opus");
+  params.set("VideoBitrate", String(videoBitrate));
+  params.set("AudioBitrate", String(audioBitrate));
+  params.set("MaxStreamingBitrate", String(streamingBitrate));
+  params.set("MaxWidth", String(Math.min(quality.maxWidth, 1280)));
+  params.set("MaxHeight", String(Math.min(quality.maxHeight, 720)));
+  params.set("TranscodingMaxAudioChannels", "2");
+  params.set("MaxAudioChannels", "2");
+  params.set("CopyTimestamps", "true");
 
   if (playSessionId) {
     params.set("PlaySessionId", playSessionId);

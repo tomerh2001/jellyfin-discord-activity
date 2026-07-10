@@ -120,6 +120,10 @@ describe("shared schemas", () => {
 
     expect(request.itemId).toBe("movie-1");
     expect(request.preferredPlayMethod).toBe("direct");
+    expect(playbackPrepareRequestSchema.parse({
+      itemId: "movie-1",
+      preferredPlayMethod: "webm"
+    }).preferredPlayMethod).toBe("webm");
 
     const response = playbackPrepareResponseSchema.parse({
       playback: {

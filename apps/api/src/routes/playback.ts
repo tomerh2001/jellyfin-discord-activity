@@ -41,9 +41,10 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
         ...(prepared.playMethod === "hls" ? { hlsPath: prepared.upstreamPath } : { directPath: prepared.upstreamPath })
       }, app.envConfig.STREAM_TICKET_TTL_SECONDS);
 
+      const directExtension = prepared.container === "webm" ? "webm" : "mp4";
       const streamUrl = prepared.playMethod === "hls"
         ? `/media/hls/${encodeURIComponent(token)}/master.m3u8`
-        : `/media/direct/${encodeURIComponent(token)}/stream.mp4`;
+        : `/media/direct/${encodeURIComponent(token)}/stream.${directExtension}`;
 
       return reply.send(playbackPrepareResponseSchema.parse({
         playback: {
@@ -133,6 +134,10 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get<{ Params: { token: string } }>("/media/direct/:token/stream.mp4", async (request, reply) => {
+    return proxyDirectTicket(request.params.token, request, reply);
+  });
+
+  app.get<{ Params: { token: string } }>("/media/direct/:token/stream.webm", async (request, reply) => {
     return proxyDirectTicket(request.params.token, request, reply);
   });
 

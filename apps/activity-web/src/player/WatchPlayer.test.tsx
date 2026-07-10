@@ -12,7 +12,23 @@ vi.mock("../api/client.js", () => ({
 vi.mock("./hls.js", () => ({
   attachVideoSource: vi.fn(() => vi.fn()),
   prefersForcedHls: vi.fn(() => false),
-  prefersDirectPlayMethod: vi.fn(() => false)
+  prefersDirectPlayMethod: vi.fn(() => false),
+  probeClientMediaCapabilities: vi.fn(() => ({
+    hlsJsSupported: true,
+    mediaSourceSupported: true,
+    canPlayMp4: "maybe",
+    canPlayH264: "maybe",
+    canPlayAac: "maybe",
+    canPlayWebm: "maybe",
+    canPlayVp9: "maybe",
+    canPlayOpus: "maybe",
+    isLinuxDiscord: false
+  })),
+  probeStreamUrl: vi.fn(async () => ({
+    ok: true,
+    status: 206,
+    contentType: "application/vnd.apple.mpegurl"
+  }))
 }));
 
 describe("WatchPlayer", () => {
@@ -91,7 +107,7 @@ describe("WatchPlayer", () => {
         onError: expect.any(Function)
       }));
     });
-    expect(screen.getByText("Using forced H.264/AAC progressive MP4 for this client.")).toBeInTheDocument();
+    expect(screen.getByText("Trying forced H.264/AAC progressive MP4.")).toBeInTheDocument();
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {

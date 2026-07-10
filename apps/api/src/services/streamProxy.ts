@@ -82,7 +82,11 @@ export async function proxyDirectStream(
   const upstreamUrl = resolveUpstreamUrl(ticket.serverUrl, ticket.directPath);
   const response = await fetchUpstream(env, ticket, upstreamUrl, request.headers.range);
 
-  return sendStreamResponse(response, reply, "video/mp4");
+  const fallbackType = ticket.directPath?.includes(".webm")
+    ? "video/webm"
+    : "video/mp4";
+
+  return sendStreamResponse(response, reply, fallbackType);
 }
 
 function rewriteHlsPlaylist(playlist: string, playlistUrl: URL, ticket: StreamTicket, token: string): string {
