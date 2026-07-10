@@ -246,6 +246,59 @@ describe("playback routes", () => {
     await app.close();
   });
 
+  it("forces HLS when preferredPlayMethod is hls even if remux is available", async () => {
+    const app = await buildPlaybackApp();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+
+      if (url === "https://jellyfin.example.com/Users/AuthenticateByName") {
+        return authResponse();
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
+        return jsonResponse({
+          MediaSources: [{
+            Id: "media-1",
+            Container: "mp4",
+            SupportsDirectPlay: true,
+            SupportsDirectStream: true,
+            SupportsTranscoding: true,
+            MediaStreams: [
+              { Type: "Video", Codec: "h264", Index: 0 },
+              { Type: "Audio", Codec: "aac", Index: 1 }
+            ]
+          }]
+        });
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Videos/movie-1/master.m3u8")) {
+        return textResponse("#EXTM3U\n#EXTINF:10,\nhls/main/0.ts\n", 200, "application/vnd.apple.mpegurl");
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const appToken = await linkAccount(app);
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/playback/prepare",
+      headers: {
+        authorization: `Bearer ${appToken}`
+      },
+      payload: {
+        itemId: "movie-1",
+        preferredPlayMethod: "hls"
+      }
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json().playback.playMethod).toBe("hls");
+    expect(prepared.json().playback.streamUrl).toMatch(/^\/media\/hls\/.+\/master\.m3u8$/);
+
+    await app.close();
+  });
+
   it("prefers static remux for browser-safe DirectPlay sources under hls-first mode", async () => {
     const app = await buildPlaybackApp();
 
@@ -519,13 +572,15 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("MediaSourceId")).toBe("media-1");
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
-        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("12000000");
         expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
         expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
-        expect(parsed.searchParams.get("VideoBitrate")).toBe("19616000");
-        expect(parsed.searchParams.get("AudioBitrate")).toBe("384000");
+        expect(parsed.searchParams.get("VideoBitrate")).toBe("11808000");
+        expect(parsed.searchParams.get("AudioBitrate")).toBe("192000");
         expect(parsed.searchParams.get("TranscodingMaxAudioChannels")).toBe("2");
-        expect(parsed.searchParams.get("RequireAvc")).toBe("false");
+        expect(parsed.searchParams.get("RequireAvc")).toBe("true");
+        expect(parsed.searchParams.get("Profile")).toBe("high");
+        expect(parsed.searchParams.get("Level")).toBe("41");
         expect(parsed.searchParams.get("AudioStreamIndex")).toBe("2");
         expect(parsed.searchParams.get("SubtitleStreamIndex")).toBe("4");
         expect(parsed.searchParams.get("SubtitleMethod")).toBe("Encode");

@@ -17,6 +17,31 @@ export function isHlsUrl(url: string): boolean {
   return url.includes(".m3u8");
 }
 
+export function isLinuxDiscordClient(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const ua = navigator.userAgent.toLowerCase();
+  const isLinux = ua.includes("linux") && !ua.includes("android");
+  const isDiscord = ua.includes("discord") || Boolean((window as Window & { DiscordNative?: unknown }).DiscordNative);
+
+  return isLinux && isDiscord;
+}
+
+/**
+ * Linux Discord rejects many static remux/progressive originals with MEDIA_ERR_SRC_NOT_SUPPORTED.
+ * Force HLS (segmented) for that client instead of remux/direct-first.
+ */
+export function prefersForcedHls(): boolean {
+  return isLinuxDiscordClient();
+}
+
+/** @deprecated Use prefersForcedHls — Linux should not start on static remux. */
+export function prefersDirectPlayMethod(): boolean {
+  return false;
+}
+
 export function attachVideoSource(
   video: HTMLVideoElement,
   source: PlayerSource,
@@ -38,7 +63,9 @@ export function attachVideoSource(
         capLevelToPlayerSize: false,
         enableWorker,
         lowLatencyMode: false,
-        backBufferLength: 90
+        backBufferLength: 90,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) {
@@ -97,21 +124,10 @@ export function attachVideoSource(
     return () => clearVideo(video);
   }
 
+  // Progressive MP4 path — set explicit MIME hint for picky Chromium embeds.
+  video.setAttribute("preload", "auto");
   video.src = source.streamUrl;
   return () => clearVideo(video);
-}
-
-export function prefersDirectPlayMethod(): boolean {
-  if (typeof navigator === "undefined") {
-    return false;
-  }
-
-  const ua = navigator.userAgent.toLowerCase();
-  const isLinux = ua.includes("linux") && !ua.includes("android");
-  const isDiscord = ua.includes("discord") || Boolean((window as Window & { DiscordNative?: unknown }).DiscordNative);
-
-  // Linux Discord (Electron) is the known-bad HLS client in this project.
-  return isLinux && isDiscord;
 }
 
 function clearVideo(video: HTMLVideoElement): void {

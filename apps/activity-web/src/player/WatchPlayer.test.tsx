@@ -11,6 +11,7 @@ vi.mock("../api/client.js", () => ({
 
 vi.mock("./hls.js", () => ({
   attachVideoSource: vi.fn(() => vi.fn()),
+  prefersForcedHls: vi.fn(() => false),
   prefersDirectPlayMethod: vi.fn(() => false)
 }));
 
@@ -90,7 +91,7 @@ describe("WatchPlayer", () => {
         onError: expect.any(Function)
       }));
     });
-    expect(screen.getByText("Using the MP4 compatibility path for this client.")).toBeInTheDocument();
+    expect(screen.getByText("Using forced H.264/AAC progressive MP4 for this client.")).toBeInTheDocument();
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {

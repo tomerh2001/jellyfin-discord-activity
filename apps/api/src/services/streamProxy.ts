@@ -82,7 +82,7 @@ export async function proxyDirectStream(
   const upstreamUrl = resolveUpstreamUrl(ticket.serverUrl, ticket.directPath);
   const response = await fetchUpstream(env, ticket, upstreamUrl, request.headers.range);
 
-  return sendStreamResponse(response, reply);
+  return sendStreamResponse(response, reply, "video/mp4");
 }
 
 function rewriteHlsPlaylist(playlist: string, playlistUrl: URL, ticket: StreamTicket, token: string): string {
@@ -143,8 +143,8 @@ async function fetchUpstream(env: AppEnv, ticket: StreamTicket, upstreamUrl: URL
   return fetch(upstreamUrl, { headers });
 }
 
-function sendStreamResponse(response: Response, reply: FastifyReply): FastifyReply {
-  const headers = proxyResponseHeaders(response);
+function sendStreamResponse(response: Response, reply: FastifyReply, fallbackContentType?: string): FastifyReply {
+  const headers = proxyResponseHeaders(response, fallbackContentType);
 
   for (const [key, value] of Object.entries(headers)) {
     reply.header(key, value);
@@ -159,7 +159,7 @@ function sendStreamResponse(response: Response, reply: FastifyReply): FastifyRep
   return reply.send(Readable.fromWeb(response.body as unknown as NodeReadableStream));
 }
 
-function proxyResponseHeaders(response: Response): Record<string, string> {
+function proxyResponseHeaders(response: Response, fallbackContentType?: string): Record<string, string> {
   const allowedHeaders = [
     "accept-ranges",
     "cache-control",
@@ -180,6 +180,15 @@ function proxyResponseHeaders(response: Response): Record<string, string> {
   }
 
   headers["cache-control"] = headers["cache-control"] ?? "no-store";
+
+  if (!headers["content-type"] && fallbackContentType) {
+    headers["content-type"] = fallbackContentType;
+  }
+
+  // Some Electron/Discord builds reject progressive streams with ambiguous MIME types.
+  if (headers["content-type"]?.includes("application/octet-stream") && fallbackContentType) {
+    headers["content-type"] = fallbackContentType;
+  }
 
   return headers;
 }

@@ -170,10 +170,36 @@ function selectPlaybackMethod(
     subtitleTracks
   };
   const remuxEligible = canRemuxBrowserSafe(source, videoCodec, audioCodec);
-  const forceDirect = input.preferredPlayMethod === "direct" || env.STREAM_PROXY_MODE === "direct";
+  const forceCompatDirect = input.preferredPlayMethod === "direct";
+  const forceDeploymentDirect = env.STREAM_PROXY_MODE === "direct";
+  const forceHls = input.preferredPlayMethod === "hls";
 
-  // Client or deployment asked for progressive/direct delivery.
-  if (forceDirect) {
+  // Client compatibility path: always re-encode to progressive H.264/AAC MP4.
+  // Static remux of the original file is rejected by some Discord clients (Linux Electron)
+  // with MEDIA_ERR_SRC_NOT_SUPPORTED even when codecs report as h264/aac.
+  if (forceCompatDirect) {
+    if (source.SupportsTranscoding !== false) {
+      return {
+        itemId: input.itemId,
+        mediaSourceId: source.Id,
+        playMethod: "direct",
+        upstreamPath: buildTranscodeHttpPath(env, input, source, playSessionId),
+        container: "mp4",
+        videoCodec: "h264",
+        audioCodec: "aac",
+        ...tracks
+      };
+    }
+
+    if (remuxEligible) {
+      return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
+    }
+
+    throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
+  }
+
+  // Deployment STREAM_PROXY_MODE=direct: prefer remux, else progressive transcode.
+  if (forceDeploymentDirect) {
     if (remuxEligible) {
       return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
     }
@@ -194,12 +220,12 @@ function selectPlaybackMethod(
     throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
   }
 
-  // Prefer lossless remux when Jellyfin says the source is browser-safe.
-  if (remuxEligible) {
+  // Prefer lossless remux when the client did not force HLS and Jellyfin allows it.
+  if (!forceHls && remuxEligible) {
     return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
   }
 
-  // Otherwise use HLS (prefer Jellyfin's TranscodingUrl when it is HLS).
+  // HLS (prefer Jellyfin's TranscodingUrl when it is HLS).
   if (source.SupportsTranscoding !== false || isHlsTranscodingUrl(source)) {
     const hlsPath = resolveHlsPath(env, input, source, playSessionId);
 
@@ -387,17 +413,27 @@ function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: M
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.mp4`, "https://jellyfin.local");
   const params = url.searchParams;
   const quality = playbackQuality(env, input);
+  // Cap progressive compatibility streams a bit lower so the first fragments arrive faster
+  // through Discord's Activity proxy on constrained clients (Linux Electron).
+  const streamingBitrate = Math.min(quality.maxStreamingBitrate, 12_000_000);
+  const audioBitrate = Math.min(192_000, Math.max(128_000, Math.floor(streamingBitrate * 0.04)));
+  const videoBitrate = Math.max(1_000_000, streamingBitrate - audioBitrate);
 
   params.set("MediaSourceId", source.Id);
   params.set("VideoCodec", "h264");
   params.set("AudioCodec", "aac");
-  params.set("VideoBitrate", String(quality.videoBitrate));
-  params.set("AudioBitrate", String(quality.audioBitrate));
-  params.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
-  params.set("MaxWidth", String(quality.maxWidth));
-  params.set("MaxHeight", String(quality.maxHeight));
+  params.set("VideoBitrate", String(videoBitrate));
+  params.set("AudioBitrate", String(audioBitrate));
+  params.set("MaxStreamingBitrate", String(streamingBitrate));
+  params.set("MaxWidth", String(Math.min(quality.maxWidth, 1920)));
+  params.set("MaxHeight", String(Math.min(quality.maxHeight, 1080)));
   params.set("TranscodingMaxAudioChannels", "2");
-  params.set("RequireAvc", "false");
+  params.set("MaxAudioChannels", "2");
+  params.set("RequireAvc", "true");
+  params.set("Profile", "high");
+  params.set("Level", "41");
+  params.set("CopyTimestamps", "true");
+  params.set("EnableMpegtsM2TsMode", "false");
 
   if (playSessionId) {
     params.set("PlaySessionId", playSessionId);

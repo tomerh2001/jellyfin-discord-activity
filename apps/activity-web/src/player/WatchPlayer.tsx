@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { preparePlayback } from "../api/client.js";
 import type { PlaybackPrepareResponse } from "../api/types.js";
 import { Button } from "../components/Button.js";
-import { attachVideoSource, prefersDirectPlayMethod } from "./hls.js";
+import { attachVideoSource, prefersForcedHls } from "./hls.js";
 import {
   correctionForDrift,
   type RemotePlayerEvent,
@@ -120,12 +120,9 @@ export function WatchPlayer({
   const [stagedSubtitleStreamIndex, setStagedSubtitleStreamIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
-  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>(() => (
-    prefersDirectPlayMethod() ? "direct" : "hls"
-  ));
-  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => (
-    initialDiagnostics(prefersDirectPlayMethod() ? "direct" : "hls")
-  ));
+  const forceHlsOnThisClient = prefersForcedHls();
+  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>("hls");
+  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => initialDiagnostics("hls"));
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | undefined>();
 
@@ -135,13 +132,17 @@ export function WatchPlayer({
     preparedKeyRef.current = undefined;
     activePlayMethodRef.current = undefined;
     renewInFlightRef.current = false;
-    const initialMethod = prefersDirectPlayMethod() ? "direct" : "hls";
     setPlayerState({ status: "idle" });
-    setPlayerNotice(undefined);
-    setPreferredPlayMethod(initialMethod);
-    setDiagnostics(initialDiagnostics(initialMethod));
+    setPlayerNotice(forceHlsOnThisClient
+      ? "Linux Discord: using segmented HLS (static remux is unsupported in this client)."
+      : undefined);
+    setPreferredPlayMethod("hls");
+    setDiagnostics({
+      ...initialDiagnostics("hls"),
+      ...(forceHlsOnThisClient ? { lastError: undefined } : {})
+    });
     setCopyStatus(undefined);
-  }, [itemId]);
+  }, [forceHlsOnThisClient, itemId]);
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
@@ -275,8 +276,10 @@ export function WatchPlayer({
     async function prepareSelectedPlayback() {
       setPlayerState({ status: "preparing" });
       setPlayerNotice(preferredPlayMethod === "direct"
-        ? "Using the MP4 compatibility path for this client."
-        : undefined);
+        ? "Using forced H.264/AAC progressive MP4 for this client."
+        : forceHlsOnThisClient
+          ? "Linux Discord: preparing segmented HLS."
+          : undefined);
       setDiagnostics((current) => ({
         ...current,
         preferredPlayMethod,
@@ -284,12 +287,16 @@ export function WatchPlayer({
       }));
 
       try {
+        // Always send preferredPlayMethod when the client needs a specific path:
+        // - Linux Discord: force "hls" so backend skips static remux
+        // - Fallback: "direct" forces re-encoded progressive MP4
+        const shouldSendPreferredMethod = preferredPlayMethod === "direct" || forceHlsOnThisClient;
         const response = await preparePlayback(token, {
           itemId: selectedItemId,
           ...(mediaSourceId ? { mediaSourceId } : {}),
           ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
           ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
-          ...(preferredPlayMethod === "direct" ? { preferredPlayMethod } : {})
+          ...(shouldSendPreferredMethod ? { preferredPlayMethod } : {})
         });
 
         if (controller.signal.aborted || !videoRef.current) {
@@ -360,7 +367,7 @@ export function WatchPlayer({
     void prepareSelectedPlayback();
 
     return () => controller.abort();
-  }, [appToken, audioStreamIndex, canPrepare, itemId, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
+  }, [appToken, audioStreamIndex, canPrepare, forceHlsOnThisClient, itemId, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
 
   useEffect(() => {
     if (isHost || playerState.status !== "ready" || !remoteStateUpdate || !videoRef.current) {
@@ -568,7 +575,7 @@ export function WatchPlayer({
       cleanupRef.current?.();
       cleanupRef.current = undefined;
       activePlayMethodRef.current = undefined;
-      setPlayerNotice("HLS playback failed in this client. Trying the MP4 compatibility fallback.");
+      setPlayerNotice("HLS playback failed in this client. Trying forced H.264/AAC progressive MP4.");
       setPreferredPlayMethod("direct");
       return;
     }
@@ -584,12 +591,17 @@ export function WatchPlayer({
     renewInFlightRef.current = true;
 
     try {
+      const renewMethod: PreferredPlayMethod = preferredPlayMethod === "direct" || playerState.playMethod === "direct"
+        ? "direct"
+        : forceHlsOnThisClient
+          ? "hls"
+          : preferredPlayMethod;
       const response = await preparePlayback(appToken, {
         itemId,
         ...(mediaSourceId ? { mediaSourceId } : {}),
         ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
         ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
-        ...(preferredPlayMethod === "direct" || playerState.playMethod === "direct" ? { preferredPlayMethod: "direct" as const } : {})
+        ...(renewMethod === "direct" || forceHlsOnThisClient ? { preferredPlayMethod: renewMethod } : {})
       });
 
       const video = videoRef.current;
