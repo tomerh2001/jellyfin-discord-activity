@@ -2,7 +2,7 @@
 
 This document explains how to create and configure the Discord Developer Portal application used by this project.
 
-The current repository implements Phase 7 plus configurable Jellyfin auth mode. It can launch as a web app, initialize the Discord Embedded App SDK, exchange a Discord OAuth code through the backend, issue a short-lived app session token, call `/api/me`, use either per-user Jellyfin linking or one shared Jellyfin account, browse/search Jellyfin items, select media as host, prepare playback, stream through the backend media proxy, synchronize host playback commands over `/ws`, enforce room limits, redact tokens from backend request logs, rate-limit requests, clean up idle rooms, and run deployment smoke checks.
+This app launches as a Discord Activity, uses the Embedded App SDK, exchanges a Discord OAuth code through the backend, issues short-lived app sessions, supports per-user or shared Jellyfin auth, library browse/search, host media selection, media proxying, and WebSocket watch-party sync.
 
 ## What Discord Is Loading
 
@@ -440,22 +440,10 @@ The simplest Discord-provided install link uses your application ID and the defa
 https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID
 ```
 
-For this deployment, with the current `.env` application ID, that shape is:
-
-```text
-https://discord.com/oauth2/authorize?client_id=1524768889580556289
-```
-
 If you want an explicit custom guild-install URL instead of relying on default install settings, use:
 
 ```text
 https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=applications.commands&integration_type=0
-```
-
-For the current application ID:
-
-```text
-https://discord.com/oauth2/authorize?client_id=1524768889580556289&scope=applications.commands&integration_type=0
 ```
 
 Only use a bot-inclusive URL if the portal requires it for your install flow:

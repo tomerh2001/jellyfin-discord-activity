@@ -3,10 +3,12 @@ dist/
 coverage/
 .env
 .env.local
-data/
+data/*
+!data/.gitkeep
 *.log
 logs/**/*
 !logs/**/
 !logs/**/.gitkeep
 !logs/README.md
 .DS_Store
+*.tsbuildinfo

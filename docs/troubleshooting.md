@@ -52,19 +52,19 @@ If the container exits immediately, check:
 
 ## Nginx Proxy Manager
 
-For `https://djf.techdaddydigital.com` forwarding to `10.1.0.82:3000`, the app environment should use:
+For `https://watch.example.com` forwarding to `YOUR_DOCKER_HOST_IP:3000`, the app environment should use:
 
 ```bash
-PUBLIC_BASE_URL=https://djf.techdaddydigital.com
-PUBLIC_WS_URL=wss://djf.techdaddydigital.com/ws
-DISCORD_REDIRECT_URI=https://djf.techdaddydigital.com/api/discord/callback
-ALLOWED_ORIGINS=https://djf.techdaddydigital.com
+PUBLIC_BASE_URL=https://watch.example.com
+PUBLIC_WS_URL=wss://watch.example.com/ws
+DISCORD_REDIRECT_URI=https://watch.example.com/api/discord/callback
+ALLOWED_ORIGINS=https://watch.example.com
 TRUST_PROXY=true
 ```
 
 In Nginx Proxy Manager:
 
-- Forward to scheme `http`, host `10.1.0.82`, port `3000`.
+- Forward to scheme `http`, host `YOUR_DOCKER_HOST_IP`, port `3000`.
 - Enable WebSocket support.
 - Use a valid SSL certificate for the public hostname.
 - Avoid logging query strings if possible because `/ws` uses a short-lived `token` query parameter.
@@ -118,8 +118,8 @@ pnpm smoke
 For a public or non-default base URL:
 
 ```bash
-SMOKE_BASE_URL=https://djf.techdaddydigital.com \
-SMOKE_WS_URL=wss://djf.techdaddydigital.com/ws \
+SMOKE_BASE_URL=https://watch.example.com \
+SMOKE_WS_URL=wss://watch.example.com/ws \
 pnpm smoke
 ```
 
@@ -171,7 +171,7 @@ If the Linux Discord client fails while Chrome or Windows Discord works:
 Check the active mode from a browser-safe config request:
 
 ```bash
-curl https://djf.techdaddydigital.com/api/config
+curl https://watch.example.com/api/config
 ```
 
 The response includes:

@@ -9,9 +9,9 @@ Recommended production shape:
 ```text
 Discord client
   -> Discord Activity iframe/proxy
-    -> https://djf.techdaddydigital.com
+    -> https://watch.example.com
       -> Nginx Proxy Manager
-        -> http://10.1.0.82:3000
+        -> http://YOUR_DOCKER_HOST_IP:3000
           -> jellyfin-discord-activity container
             -> Jellyfin over LAN or private Docker network
 ```
@@ -34,8 +34,8 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
 1. Clone the repository and enter it:
 
    ```bash
-   git clone <repo-url>
-   cd DiscordJellyfin
+   git clone https://github.com/<you>/jellyfin-discord-activity.git
+   cd jellyfin-discord-activity
    ```
 
 2. Create `.env`:
@@ -56,13 +56,13 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
    Minimum values for your Nginx Proxy Manager setup:
 
    ```bash
-   PUBLIC_BASE_URL=https://djf.techdaddydigital.com
-   PUBLIC_WS_URL=wss://djf.techdaddydigital.com/ws
+   PUBLIC_BASE_URL=https://watch.example.com
+   PUBLIC_WS_URL=wss://watch.example.com/ws
    PUBLIC_DISCORD_CLIENT_ID=your_application_id
 
    DISCORD_CLIENT_ID=your_application_id
    DISCORD_CLIENT_SECRET=your_client_secret
-   DISCORD_REDIRECT_URI=https://djf.techdaddydigital.com/api/discord/callback
+   DISCORD_REDIRECT_URI=https://watch.example.com/api/discord/callback
 
    APP_SESSION_SECRET=generated_32_byte_value
    APP_SESSION_TTL_SECONDS=28800
@@ -76,7 +76,7 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
    JELLYFIN_SHARED_USERNAME=
    JELLYFIN_SHARED_PASSWORD=
 
-   ALLOWED_ORIGINS=https://djf.techdaddydigital.com
+   ALLOWED_ORIGINS=https://watch.example.com
    TRUST_PROXY=true
    NODE_ENV=production
    LOG_LEVEL=info
@@ -117,7 +117,7 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
 8. Confirm public health:
 
    ```bash
-   curl https://djf.techdaddydigital.com/health
+   curl https://watch.example.com/health
    ```
 
 ## Nginx Proxy Manager
@@ -125,15 +125,15 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
 Create or edit a Proxy Host:
 
 ```text
-Domain Names: djf.techdaddydigital.com
+Domain Names: watch.example.com
 Scheme: http
-Forward Hostname / IP: 10.1.0.82
+Forward Hostname / IP: YOUR_DOCKER_HOST_IP
 Forward Port: 3000
 Cache Assets: optional
 Block Common Exploits: enabled
 Websockets Support: enabled
 Access List: public, unless you know Discord can still reach it
-SSL Certificate: valid certificate for djf.techdaddydigital.com
+SSL Certificate: valid certificate for watch.example.com
 Force SSL: enabled
 HTTP/2 Support: enabled
 ```
@@ -147,14 +147,14 @@ Because `/ws` carries a short-lived app session token in a query parameter, avoi
 OAuth2 redirect:
 
 ```text
-https://djf.techdaddydigital.com/api/discord/callback
+https://watch.example.com/api/discord/callback
 ```
 
 Activity URL mapping:
 
 ```text
 PREFIX      TARGET
-/           djf.techdaddydigital.com
+/           watch.example.com
 ```
 
 The mapping target is only the hostname. Do not include `https://`.
@@ -163,10 +163,10 @@ Optional explicit mappings:
 
 ```text
 PREFIX      TARGET
-/api        djf.techdaddydigital.com
-/ws         djf.techdaddydigital.com
-/media      djf.techdaddydigital.com
-/assets     djf.techdaddydigital.com
+/api        watch.example.com
+/ws         watch.example.com
+/media      watch.example.com
+/assets     watch.example.com
 ```
 
 ## Jellyfin Reachability
@@ -250,8 +250,8 @@ The smoke script needs a valid app token to test `/ws`. For local pre-production
 4. For the public URL:
 
    ```bash
-   SMOKE_BASE_URL=https://djf.techdaddydigital.com \
-   SMOKE_WS_URL=wss://djf.techdaddydigital.com/ws \
+   SMOKE_BASE_URL=https://watch.example.com \
+   SMOKE_WS_URL=wss://watch.example.com/ws \
    pnpm smoke
    ```
 

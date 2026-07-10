@@ -6,6 +6,8 @@ coverage
 .env
 .env.local
 data
+logs
 .git
 .gitignore
 *.log
+plan.md

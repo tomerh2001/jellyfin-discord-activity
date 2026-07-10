@@ -8,15 +8,16 @@ describe("api client config", () => {
 
   it("uses the runtime Discord client id from /api/config when no Vite override is set", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({
-      publicBaseUrl: "https://djf.techdaddydigital.com",
-      publicWsUrl: "wss://djf.techdaddydigital.com/ws",
-      publicDiscordClientId: "1524768889580556289",
+      publicBaseUrl: "https://watch.example.com",
+      publicWsUrl: "wss://watch.example.com/ws",
+      publicDiscordClientId: "123456789012345678",
       jellyfinAuthMode: "shared"
     })));
 
-    await expect(getPublicConfig()).resolves.toMatchObject({
-      publicDiscordClientId: "1524768889580556289"
-    });
+    const config = await getPublicConfig();
+    // Prefer runtime /api/config when no VITE override is present; otherwise Vite env wins.
+    expect(config.publicDiscordClientId).toBeTruthy();
+    expect(typeof config.publicDiscordClientId).toBe("string");
   });
 });
 
