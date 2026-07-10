@@ -34,7 +34,7 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
 1. Clone the repository and enter it:
 
    ```bash
-   git clone https://github.com/<you>/jellyfin-discord-activity.git
+   git clone https://github.com/camarokris/jellyfin-discord-activity.git
    cd jellyfin-discord-activity
    ```
 

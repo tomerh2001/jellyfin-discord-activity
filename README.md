@@ -55,7 +55,7 @@ Jellyfin does **not** need to be public. Only this app must be reachable by Disc
 ### 1. Clone and configure
 
 ```bash
-git clone https://github.com/<you>/jellyfin-discord-activity.git
+git clone https://github.com/camarokris/jellyfin-discord-activity.git
 cd jellyfin-discord-activity
 cp .env.example .env
 ```
