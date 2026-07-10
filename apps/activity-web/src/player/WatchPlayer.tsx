@@ -5,7 +5,8 @@ import type { PlaybackPrepareResponse } from "../api/types.js";
 import { Button } from "../components/Button.js";
 import {
   attachVideoSource,
-  prefersForcedHls,
+  clientPlaybackLadder,
+  prefersForcedWebm,
   probeClientMediaCapabilities,
   probeStreamUrl,
   type ClientMediaCapabilities
@@ -106,7 +107,7 @@ type PlaybackDiagnostics = {
   userAgent?: string | undefined;
 };
 
-function initialDiagnostics(method: PreferredPlayMethod, video?: HTMLVideoElement | null): PlaybackDiagnostics {
+function initialDiagnostics(method: PreferredPlayMethod, ladder: PreferredPlayMethod[], video?: HTMLVideoElement | null): PlaybackDiagnostics {
   return {
     preferredPlayMethod: method,
     fallbackChain: [method],
@@ -114,36 +115,35 @@ function initialDiagnostics(method: PreferredPlayMethod, video?: HTMLVideoElemen
       at: new Date().toISOString(),
       stage: "info",
       preferredPlayMethod: method,
-      message: "Player reset; starting playback ladder."
+      message: `Player reset; ladder=${ladder.join(" → ")}.`
     }],
     capabilities: probeClientMediaCapabilities(video),
     ...(typeof navigator !== "undefined" ? { userAgent: navigator.userAgent } : {})
   };
 }
 
-function nextFallbackMethod(current: PreferredPlayMethod): PreferredPlayMethod | undefined {
-  if (current === "hls") {
-    return "direct";
+function nextFallbackMethod(current: PreferredPlayMethod, ladder: PreferredPlayMethod[]): PreferredPlayMethod | undefined {
+  const index = ladder.indexOf(current);
+  if (index < 0) {
+    return ladder[0];
   }
 
-  if (current === "direct") {
-    return "webm";
-  }
-
-  return undefined;
+  return ladder[index + 1];
 }
 
-function methodNotice(method: PreferredPlayMethod, forceHls: boolean): string | undefined {
+function methodNotice(method: PreferredPlayMethod, linuxClient: boolean): string | undefined {
   if (method === "webm") {
-    return "Trying VP9/Opus WebM compatibility stream (H.264 may be unavailable in this client).";
+    return linuxClient
+      ? "Linux Discord: using VP9/Opus WebM (H.264 is rejected by this client)."
+      : "Trying VP9/Opus WebM compatibility stream.";
   }
 
   if (method === "direct") {
     return "Trying forced H.264/AAC progressive MP4.";
   }
 
-  if (forceHls) {
-    return "Linux Discord: preparing segmented HLS (skipping static remux).";
+  if (linuxClient) {
+    return "Trying segmented HLS on Linux Discord.";
   }
 
   return undefined;
@@ -173,11 +173,13 @@ export function WatchPlayer({
   const videoFrameRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | undefined>(undefined);
   const preparedKeyRef = useRef<string | undefined>(undefined);
-  const activeStageRef = useRef<PreferredPlayMethod>("hls");
+  const playbackLadder = clientPlaybackLadder() as PreferredPlayMethod[];
+  const initialMethod = playbackLadder[0] ?? "hls";
+  const activeStageRef = useRef<PreferredPlayMethod>(initialMethod);
   const suppressEventsUntilRef = useRef(0);
   const renewInFlightRef = useRef(false);
   const loggedPlaySuccessRef = useRef(false);
-  const diagnosticsRef = useRef<PlaybackDiagnostics>(initialDiagnostics("hls"));
+  const diagnosticsRef = useRef<PlaybackDiagnostics>(initialDiagnostics(initialMethod, playbackLadder));
   const [playerState, setPlayerState] = useState<PlayerState>({ status: "idle" });
   const [playerNotice, setPlayerNotice] = useState<string | undefined>();
   const [stagedPlayback, setStagedPlayback] = useState<PreparedTrackState>();
@@ -186,9 +188,9 @@ export function WatchPlayer({
   const [stagedSubtitleStreamIndex, setStagedSubtitleStreamIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
-  const forceHlsOnThisClient = prefersForcedHls();
-  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>("hls");
-  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => initialDiagnostics("hls"));
+  const linuxClient = prefersForcedWebm();
+  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>(initialMethod);
+  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => initialDiagnostics(initialMethod, playbackLadder));
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | undefined>();
 
@@ -203,6 +205,7 @@ export function WatchPlayer({
         preferredPlayMethod: attempt.preferredPlayMethod,
         attempts: [...current.attempts, entry],
         ...(attempt.stage === "error" ? { lastError: attempt.message } : {}),
+        ...(attempt.stage === "success" ? { lastError: undefined } : {}),
         ...(attempt.playMethod ? { playMethod: attempt.playMethod } : {}),
         ...(attempt.streamUrl ? { streamUrl: attempt.streamUrl } : {}),
         ...(attempt.videoCodec ? { videoCodec: attempt.videoCodec } : {}),
@@ -217,17 +220,19 @@ export function WatchPlayer({
     cleanupRef.current?.();
     cleanupRef.current = undefined;
     preparedKeyRef.current = undefined;
-    activeStageRef.current = "hls";
+    const ladder = clientPlaybackLadder() as PreferredPlayMethod[];
+    const start = ladder[0] ?? "hls";
+    activeStageRef.current = start;
     renewInFlightRef.current = false;
     loggedPlaySuccessRef.current = false;
     setPlayerState({ status: "idle" });
-    setPlayerNotice(methodNotice("hls", forceHlsOnThisClient));
-    setPreferredPlayMethod("hls");
-    const reset = initialDiagnostics("hls", videoRef.current);
+    setPlayerNotice(methodNotice(start, linuxClient));
+    setPreferredPlayMethod(start);
+    const reset = initialDiagnostics(start, ladder, videoRef.current);
     diagnosticsRef.current = reset;
     setDiagnostics(reset);
     setCopyStatus(undefined);
-  }, [forceHlsOnThisClient, itemId]);
+  }, [itemId, linuxClient]);
 
   useEffect(() => () => cleanupRef.current?.(), []);
 
@@ -360,7 +365,7 @@ export function WatchPlayer({
 
     async function prepareSelectedPlayback() {
       setPlayerState({ status: "preparing" });
-      setPlayerNotice(methodNotice(preferredPlayMethod, forceHlsOnThisClient));
+      setPlayerNotice(methodNotice(preferredPlayMethod, linuxClient));
       activeStageRef.current = preferredPlayMethod;
       pushAttempt({
         stage: "prepare",
@@ -375,8 +380,9 @@ export function WatchPlayer({
       }));
 
       try {
-        // Send preferredPlayMethod for forced paths (Linux HLS, MP4/WebM fallbacks).
-        const shouldSendPreferredMethod = preferredPlayMethod !== "hls" || forceHlsOnThisClient;
+        // Always send preferred method for webm/direct, and for Linux (forced path).
+        // On normal clients, omit preferredPlayMethod for the default "hls" slot so remux can win.
+        const shouldSendPreferredMethod = preferredPlayMethod !== "hls" || linuxClient;
         const response = await preparePlayback(token, {
           itemId: selectedItemId,
           ...(mediaSourceId ? { mediaSourceId } : {}),
@@ -486,7 +492,7 @@ export function WatchPlayer({
     void prepareSelectedPlayback();
 
     return () => controller.abort();
-  }, [appToken, audioStreamIndex, canPrepare, forceHlsOnThisClient, itemId, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
+  }, [appToken, audioStreamIndex, canPrepare, itemId, linuxClient, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
 
   useEffect(() => {
     if (isHost || playerState.status !== "ready" || !remoteStateUpdate || !videoRef.current) {
@@ -701,7 +707,7 @@ export function WatchPlayer({
       message
     });
 
-    const fallback = nextFallbackMethod(stage);
+    const fallback = nextFallbackMethod(stage, playbackLadder);
     if (fallback) {
       preparedKeyRef.current = undefined;
       cleanupRef.current?.();
@@ -718,7 +724,7 @@ export function WatchPlayer({
           : [...current.fallbackChain, fallback],
         lastError: message
       }));
-      setPlayerNotice(methodNotice(fallback, forceHlsOnThisClient));
+      setPlayerNotice(methodNotice(fallback, linuxClient));
       setPreferredPlayMethod(fallback);
       return;
     }
@@ -745,7 +751,7 @@ export function WatchPlayer({
         ...(mediaSourceId ? { mediaSourceId } : {}),
         ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
         ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
-        ...(renewMethod !== "hls" || forceHlsOnThisClient ? { preferredPlayMethod: renewMethod } : {})
+        ...(renewMethod !== "hls" || linuxClient ? { preferredPlayMethod: renewMethod } : {})
       });
 
       const video = videoRef.current;

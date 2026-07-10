@@ -11,8 +11,10 @@ vi.mock("../api/client.js", () => ({
 
 vi.mock("./hls.js", () => ({
   attachVideoSource: vi.fn(() => vi.fn()),
+  prefersForcedWebm: vi.fn(() => false),
   prefersForcedHls: vi.fn(() => false),
   prefersDirectPlayMethod: vi.fn(() => false),
+  clientPlaybackLadder: vi.fn(() => ["hls", "direct", "webm"]),
   probeClientMediaCapabilities: vi.fn(() => ({
     hlsJsSupported: true,
     mediaSourceSupported: true,

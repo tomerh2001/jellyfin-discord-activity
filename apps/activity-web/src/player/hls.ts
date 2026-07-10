@@ -43,16 +43,31 @@ export function isLinuxDiscordClient(): boolean {
 }
 
 /**
- * Linux Discord rejects many static remux/progressive originals with MEDIA_ERR_SRC_NOT_SUPPORTED.
- * Force HLS (segmented) for that client instead of remux/direct-first.
+ * Linux Discord (Electron) rejects H.264 HLS/MP4 in practice with MEDIA_ERR_SRC_NOT_SUPPORTED
+ * even when canPlayType reports "probably". VP9/Opus WebM is the reliable path there.
  */
-export function prefersForcedHls(): boolean {
+export function prefersForcedWebm(): boolean {
   return isLinuxDiscordClient();
 }
 
-/** @deprecated Use prefersForcedHls — Linux should not start on static remux. */
+/** @deprecated Prefer prefersForcedWebm for Linux Discord. */
+export function prefersForcedHls(): boolean {
+  return false;
+}
+
+/** @deprecated Use prefersForcedWebm — Linux should not start on static remux. */
 export function prefersDirectPlayMethod(): boolean {
   return false;
+}
+
+/** Preferred playback ladder for this client (first entry is the initial attempt). */
+export function clientPlaybackLadder(): Array<"hls" | "direct" | "webm"> {
+  if (isLinuxDiscordClient()) {
+    // Empirically: hls (h264) and progressive mp4 fail; webm (vp9/opus) works.
+    return ["webm", "hls", "direct"];
+  }
+
+  return ["hls", "direct", "webm"];
 }
 
 export function probeClientMediaCapabilities(video?: HTMLVideoElement | null): ClientMediaCapabilities {

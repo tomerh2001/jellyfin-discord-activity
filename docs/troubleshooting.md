@@ -160,17 +160,15 @@ If playback works but looks much softer than Jellyfin direct playback:
 
 If the Linux Discord client fails while Chrome or Windows Discord works:
 
-1. Linux Discord often rejects **static remux** progressive files with `MEDIA_ERR_SRC_NOT_SUPPORTED` even for H.264/AAC sources.
-2. The Linux client therefore **forces HLS** (`preferredPlayMethod=hls`) so the backend does not return static remux.
-3. hls.js workers stay disabled (Discord iframes are unreliable with workers).
-4. Per-client fallback ladder (other viewers are unchanged):
-   - `hls` → forced progressive H.264/AAC MP4 (`direct`) → forced progressive VP9/Opus WebM (`webm`)
-5. Open **Show diagnostics** / **Copy diagnostics** under the player. The JSON now includes:
-   - `fallbackChain` — methods attempted in order
-   - `attempts[]` — prepare / stream probe / attach / hls info / errors / fallback steps
-   - `capabilities` — `canPlayH264`, `canPlayVp9`, MSE/hls.js support
-   - `lastError` — most recent failure
-6. If `capabilities.canPlayH264` is empty/`no`, the client likely lacks proprietary codecs and needs the WebM step (or a Discord build with H.264).
+1. Empirically, Discord Linux Electron **rejects H.264** (both HLS TS and progressive MP4) with `MEDIA_ERR_SRC_NOT_SUPPORTED`, even when `canPlayType` reports `"probably"` and the server is delivering valid H.264/AAC.
+2. Linux Discord therefore starts on **VP9/Opus WebM** (`preferredPlayMethod=webm`) for a faster first frame.
+3. Ladder on Linux: `webm` → `hls` → `direct`. On Windows/Web: remux when possible, else `hls` → `direct` → `webm`.
+4. hls.js workers stay disabled (Discord iframes are unreliable with workers).
+5. Open **Show diagnostics** / **Copy diagnostics**. Useful fields:
+   - `fallbackChain` / `attempts[]` — full ladder
+   - `capabilities` — note that `canPlayH264: "probably"` can still fail at runtime on Linux Discord
+   - `lastError` — cleared after a successful `play` event
+6. Server logs (`logs/app/app.log`) record each `Playback prepared` with playMethod/container/codecs.
 
 ## Jellyfin Auth Mode Problems
 

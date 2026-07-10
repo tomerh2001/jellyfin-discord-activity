@@ -246,6 +246,8 @@ function selectPlaybackMethod(
   }
 
   // HLS (prefer Jellyfin's TranscodingUrl when it is HLS).
+  // Report delivery codecs (H.264/AAC), not source codecs (e.g. TrueHD), so clients/diagnostics
+  // do not misread the stream as unplayable for the wrong reason.
   if (source.SupportsTranscoding !== false || isHlsTranscodingUrl(source)) {
     const hlsPath = resolveHlsPath(env, input, source, playSessionId);
 
@@ -255,8 +257,8 @@ function selectPlaybackMethod(
       playMethod: "hls",
       upstreamPath: hlsPath,
       ...(source.TranscodingContainer ? { container: source.TranscodingContainer } : { container: "ts" }),
-      ...(videoCodec ? { videoCodec } : {}),
-      ...(audioCodec ? { audioCodec } : {}),
+      videoCodec: "h264",
+      audioCodec: "aac",
       ...tracks
     };
   }
