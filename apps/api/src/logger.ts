@@ -1,7 +1,39 @@
+import { createWriteStream, mkdirSync } from "node:fs";
+import path from "node:path";
 import type { FastifyRequest } from "fastify";
+import pino, { type DestinationStream, type Level } from "pino";
 import type { AppEnv } from "./env.js";
 
-export function loggerConfig(env: AppEnv) {
+export type FastifyLoggerSetup =
+  | { logger: ReturnType<typeof loggerOptions> }
+  | { loggerInstance: pino.Logger };
+
+export function loggerConfig(env: AppEnv): FastifyLoggerSetup {
+  const options = loggerOptions(env);
+
+  if (!env.LOG_DIR) {
+    return { logger: options };
+  }
+
+  mkdirSync(env.LOG_DIR, { recursive: true });
+
+  const appLogPath = path.join(env.LOG_DIR, "app.log");
+  const errorLogPath = path.join(env.LOG_DIR, "error.log");
+  const level = normalizeLevel(env.LOG_LEVEL);
+
+  const streams: pino.StreamEntry[] = [
+    { level, stream: process.stdout },
+    { level, stream: createWriteStream(appLogPath, { flags: "a" }) as DestinationStream },
+    { level: "error", stream: createWriteStream(errorLogPath, { flags: "a" }) as DestinationStream }
+  ];
+
+  const logger = pino(options, pino.multistream(streams));
+  logger.info({ logDir: env.LOG_DIR, appLogPath, errorLogPath }, "File logging enabled");
+
+  return { loggerInstance: logger };
+}
+
+function loggerOptions(env: AppEnv) {
   return {
     level: env.LOG_LEVEL,
     redact: {
@@ -31,6 +63,17 @@ export function loggerConfig(env: AppEnv) {
       }
     }
   };
+}
+
+function normalizeLevel(level: string): Level {
+  const normalized = level.toLowerCase();
+  const allowed: Level[] = ["fatal", "error", "warn", "info", "debug", "trace"];
+
+  if ((allowed as string[]).includes(normalized)) {
+    return normalized as Level;
+  }
+
+  return "info";
 }
 
 export function redactUrl(url: string | undefined): string | undefined {

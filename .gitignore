@@ -5,4 +5,8 @@ coverage/
 .env.local
 data/
 *.log
+logs/**/*
+!logs/**/
+!logs/**/.gitkeep
+!logs/README.md
 .DS_Store

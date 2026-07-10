@@ -46,7 +46,7 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
         ? `/media/hls/${encodeURIComponent(token)}/master.m3u8`
         : `/media/direct/${encodeURIComponent(token)}/stream.${directExtension}`;
 
-      return reply.send(playbackPrepareResponseSchema.parse({
+      const body = playbackPrepareResponseSchema.parse({
         playback: {
           itemId: prepared.itemId,
           mediaSourceId: prepared.mediaSourceId,
@@ -61,7 +61,22 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
           audioTracks: prepared.audioTracks,
           subtitleTracks: prepared.subtitleTracks
         }
-      }));
+      });
+
+      request.log.info({
+        playback: {
+          itemId: prepared.itemId,
+          mediaSourceId: prepared.mediaSourceId,
+          playMethod: prepared.playMethod,
+          container: prepared.container,
+          videoCodec: prepared.videoCodec,
+          audioCodec: prepared.audioCodec,
+          preferredPlayMethod: parsed.data.preferredPlayMethod,
+          expiresAt: ticket.expiresAt.toISOString()
+        }
+      }, "Playback prepared");
+
+      return reply.send(body);
     } catch (error) {
       if (error instanceof AuthError) {
         return reply.code(401).send(sendAuthError(error));
@@ -77,6 +92,11 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
           : error.code === "jellyfin_access_denied"
             ? 403
             : 502;
+        request.log.warn({
+          err: error,
+          jellyfinCode: error.code,
+          preferredPlayMethod: (request.body as { preferredPlayMethod?: string } | undefined)?.preferredPlayMethod
+        }, "Playback prepare rejected by Jellyfin");
         return reply.code(statusCode).send(apiError(error.code, error.publicMessage));
       }
 

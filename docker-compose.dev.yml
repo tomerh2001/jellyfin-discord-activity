@@ -8,9 +8,11 @@ services:
       NODE_ENV: development
       PORT: 3000
       DEV_AUTH_MOCK: "true"
+      LOG_DIR: /logs
     volumes:
       - .:/app
       - pnpm_store:/root/.local/share/pnpm/store
+      - ./logs/app:/logs
     ports:
       - "3000:3000"
 

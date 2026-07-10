@@ -16,7 +16,7 @@ import { wsRoutes } from "./ws/index.js";
 
 export async function buildApp(env: AppEnv = loadEnv()) {
   const app = Fastify({
-    logger: loggerConfig(env),
+    ...loggerConfig(env),
     trustProxy: env.TRUST_PROXY
   });
 

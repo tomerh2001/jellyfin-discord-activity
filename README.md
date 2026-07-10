@@ -147,9 +147,15 @@ The app container does not need Jellyfin to be public if the container can reach
    curl https://djf.techdaddydigital.com/health
    ```
 
-10. Check logs:
+10. Check logs (host-mapped files or Docker):
 
     ```bash
+    # Preferred: files on the host under ./logs
+    tail -f logs/app/app.log
+    # or
+    ./scripts/tail-logs.sh app
+
+    # Docker stdout (still available)
     docker compose logs -f app
     ```
 
@@ -222,6 +228,7 @@ HOST=0.0.0.0
 PORT=3000
 TRUST_PROXY=true
 LOG_LEVEL=info
+# Docker sets LOG_DIR=/logs → host ./logs/app/{app,error}.log
 NODE_ENV=production
 ```
 

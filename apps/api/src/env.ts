@@ -10,6 +10,8 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(3000),
   HOST: z.string().default("0.0.0.0"),
   LOG_LEVEL: z.string().default("info"),
+  /** When set, structured logs are appended to LOG_DIR/app.log and errors to LOG_DIR/error.log (plus stdout). */
+  LOG_DIR: z.string().default(""),
   TRUST_PROXY: booleanFromString.default(false),
   PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
   PUBLIC_WS_URL: z.string().url().default("ws://localhost:3000/ws"),

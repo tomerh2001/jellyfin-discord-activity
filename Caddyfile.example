@@ -1,4 +1,17 @@
+# Example production Caddy config with file logging.
+# Copy to Caddyfile and adjust the hostname.
+# Access logs land in ./logs/caddy when using docker compose --profile proxy.
+
 watch.example.com {
-  encode zstd gzip
-  reverse_proxy app:3000
+	encode zstd gzip
+	reverse_proxy app:3000
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 20mb
+			roll_keep 5
+			roll_keep_for 168h
+		}
+		format json
+	}
 }

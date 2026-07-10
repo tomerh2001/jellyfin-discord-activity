@@ -15,6 +15,7 @@
 - The backend enforces host-only shared playback commands; participant player events must not mutate room playback state.
 - The backend applies an app-wide rate limit. Tune `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW` for your deployment and set `TRUST_PROXY=true` only when the app is behind a trusted reverse proxy.
 - Fastify request logs are structured JSON and redact authorization headers, cookies, common token fields, passwords, Discord OAuth codes, `/ws?token=...`, and other sensitive query parameters before writing URLs.
+- When `LOG_DIR` is set (Docker default `/logs` → host `./logs/app`), the same redacted JSON is appended to `app.log` / `error.log`. Treat that directory as sensitive and do not commit log files.
 - Stream tickets are also invalidated when the app session that created them has expired, even if `STREAM_TICKET_TTL_SECONDS` has not elapsed.
 - Invalid WebSocket payloads return an `invalid_json` or validation error message instead of crashing the room process.
 - Rooms without active WebSocket participants are removed after `ROOM_IDLE_TTL_SECONDS`; active rooms are skipped during idle cleanup.

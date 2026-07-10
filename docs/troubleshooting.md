@@ -4,6 +4,24 @@
 - If Discord cannot load the Activity, verify URL mappings use hostnames without `https://`.
 - If container startup fails, confirm `.env` exists and port `3000` is available.
 
+## Host log files
+
+With the default `docker-compose.yml`, app logs are written to:
+
+```text
+logs/app/app.log      # all structured JSON logs
+logs/app/error.log    # error-level only
+```
+
+```bash
+./scripts/tail-logs.sh app
+grep -E 'Playback prepared|Playback prepare|HLS|Direct stream' logs/app/app.log | tail -50
+```
+
+If you also run Caddy via `docker compose --profile proxy`, access logs go to `logs/caddy/access.log` when the Caddyfile uses file logging (see `Caddyfile.example`).
+
+Share relevant `logs/app/app.log` excerpts together with Activity **Copy diagnostics** when reporting Linux playback issues.
+
 ## Container Startup
 
 Run:

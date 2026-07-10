@@ -80,6 +80,7 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
    TRUST_PROXY=true
    NODE_ENV=production
    LOG_LEVEL=info
+   # Optional outside Docker. docker-compose.yml sets LOG_DIR=/logs → ./logs/app
    PORT=3000
    ```
 
@@ -103,7 +104,8 @@ The app listens on container port `3000`. The default `docker-compose.yml` publi
 
    ```bash
    docker compose ps
-   docker compose logs --tail 100 app
+   tail -n 100 logs/app/app.log
+   # or: docker compose logs --tail 100 app
    ```
 
 7. Confirm local health:
