@@ -83,11 +83,11 @@ type PlaybackAttempt = {
   message?: string | undefined;
   probe?: {
     ok: boolean;
-    status?: number;
-    contentType?: string;
-    acceptRanges?: string;
-    error?: string;
-  };
+    status?: number | undefined;
+    contentType?: string | undefined;
+    acceptRanges?: string | undefined;
+    error?: string | undefined;
+  } | undefined;
 };
 
 type PlaybackDiagnostics = {
