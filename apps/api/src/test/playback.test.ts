@@ -58,7 +58,7 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("MediaSourceId")).toBe("media-1");
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
-        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("8000000");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
         expect(parsed.searchParams.has("SubtitleStreamIndex")).toBe(false);
         expect(parsed.searchParams.has("SubtitleMethod")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
@@ -163,7 +163,7 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("MediaSourceId")).toBe("media-1");
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
-        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("8000000");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
         expect(parsed.searchParams.has("SegmentContainer")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");

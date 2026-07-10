@@ -447,7 +447,7 @@ Body:
   "mediaSourceId": "optional_media_source_id",
   "audioStreamIndex": 1,
   "subtitleStreamIndex": 2,
-  "maxStreamingBitrate": 8000000
+  "maxStreamingBitrate": 20000000
 }
 ```
 

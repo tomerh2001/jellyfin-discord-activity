@@ -182,6 +182,21 @@ p {
   border-radius: 0;
 }
 
+.player-expanded-active {
+  overflow: hidden;
+}
+
+.video-frame-expanded {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  width: 100vw;
+  height: 100vh;
+  aspect-ratio: auto;
+  min-height: 0;
+  border-radius: 0;
+}
+
 .fullscreen-button {
   position: absolute;
   top: 10px;

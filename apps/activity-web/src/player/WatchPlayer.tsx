@@ -94,6 +94,7 @@ export function WatchPlayer({
   const [stagedAudioStreamIndex, setStagedAudioStreamIndex] = useState<number | undefined>();
   const [stagedSubtitleStreamIndex, setStagedSubtitleStreamIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
 
   useEffect(() => {
     cleanupRef.current?.();
@@ -107,7 +108,12 @@ export function WatchPlayer({
 
   useEffect(() => {
     function updateFullscreenState() {
-      setIsFullscreen(currentFullscreenElement() === videoFrameRef.current);
+      const frameIsFullscreen = currentFullscreenElement() === videoFrameRef.current;
+
+      setIsFullscreen(frameIsFullscreen);
+      if (frameIsFullscreen) {
+        setIsExpandedPlayer(false);
+      }
     }
 
     document.addEventListener("fullscreenchange", updateFullscreenState);
@@ -118,6 +124,26 @@ export function WatchPlayer({
       document.removeEventListener("webkitfullscreenchange", updateFullscreenState);
     };
   }, []);
+
+  useEffect(() => {
+    function collapseExpandedPlayer(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsExpandedPlayer(false);
+      }
+    }
+
+    if (!isExpandedPlayer) {
+      return;
+    }
+
+    document.body.classList.add("player-expanded-active");
+    document.addEventListener("keydown", collapseExpandedPlayer);
+
+    return () => {
+      document.body.classList.remove("player-expanded-active");
+      document.removeEventListener("keydown", collapseExpandedPlayer);
+    };
+  }, [isExpandedPlayer]);
 
   useEffect(() => {
     setStagedPlayback(undefined);
@@ -328,7 +354,7 @@ export function WatchPlayer({
 
   return (
     <section className="player-shell">
-      <div className="video-frame" ref={videoFrameRef}>
+      <div className={isExpandedPlayer ? "video-frame video-frame-expanded" : "video-frame"} ref={videoFrameRef}>
         <video
           controls
           onEnded={() => sendHostPlayerEvent("ended")}
@@ -350,13 +376,13 @@ export function WatchPlayer({
           </div>
         ) : null}
         <button
-          aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          aria-label={isFullscreen || isExpandedPlayer ? "Exit fullscreen" : "Enter fullscreen"}
           className="fullscreen-button"
           onClick={toggleFullscreen}
-          title={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+          title={isFullscreen || isExpandedPlayer ? "Exit fullscreen" : "Enter fullscreen"}
           type="button"
         >
-          {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+          {isFullscreen || isExpandedPlayer ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
         </button>
       </div>
       <div className="player-footer">
@@ -453,19 +479,30 @@ export function WatchPlayer({
 
     if (currentFullscreenElement()) {
       void exitFullscreen().catch(() => {
-        setPlayerNotice("Fullscreen could not be closed by this client.");
+        setIsExpandedPlayer(false);
       });
       return;
     }
 
+    if (isExpandedPlayer) {
+      setIsExpandedPlayer(false);
+      return;
+    }
+
+    if (!fullscreenIsEnabled()) {
+      setIsExpandedPlayer(true);
+      return;
+    }
+
     void requestElementFullscreen(frame).catch(() => {
-      setPlayerNotice("Fullscreen is not available in this client.");
+      setIsExpandedPlayer(true);
     });
   }
 }
 
 type FullscreenDocument = Document & {
   webkitExitFullscreen?: () => Promise<void> | void;
+  webkitFullscreenEnabled?: boolean;
   webkitFullscreenElement?: Element | null;
 };
 
@@ -477,6 +514,12 @@ function currentFullscreenElement(): Element | null {
   const fullscreenDocument = document as FullscreenDocument;
 
   return document.fullscreenElement ?? fullscreenDocument.webkitFullscreenElement ?? null;
+}
+
+function fullscreenIsEnabled(): boolean {
+  const fullscreenDocument = document as FullscreenDocument;
+
+  return document.fullscreenEnabled || fullscreenDocument.webkitFullscreenEnabled === true;
 }
 
 async function requestElementFullscreen(element: HTMLElement): Promise<void> {

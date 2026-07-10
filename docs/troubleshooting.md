@@ -133,6 +133,8 @@ If playback never prepares:
 - Confirm the app container can reach `JELLYFIN_DEFAULT_SERVER_URL`.
 - Confirm `STREAM_MAX_BITRATE` is not higher than your Jellyfin server can handle.
 
+If playback works but looks much softer than Jellyfin direct playback, increase `STREAM_MAX_BITRATE` in `.env` and recreate the container. The app uses an H.264/AAC HLS stream for Discord compatibility, so very high bitrate source files will usually be transcoded. The default `20000000` is intended to preserve good 1080p quality while remaining practical for several viewers. For high-motion 1080p or 4K sources, try `30000000` or `40000000` if your Jellyfin server CPU/GPU and upload bandwidth can handle one stream per Activity participant.
+
 ## Jellyfin Auth Mode Problems
 
 Check the active mode from a browser-safe config request:
