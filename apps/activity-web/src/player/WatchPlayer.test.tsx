@@ -111,9 +111,9 @@ describe("WatchPlayer", () => {
         onError: expect.any(Function)
       }));
     });
-    expect(
-      screen.getByText(/forced H\.264\/AAC progressive MP4|Buffering progressive stream/i)
-    ).toBeInTheDocument();
+    expect(preparePlaybackMock).toHaveBeenCalledWith("app-token", expect.objectContaining({
+      preferredPlayMethod: "direct"
+    }));
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {
