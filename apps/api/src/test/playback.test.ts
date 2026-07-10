@@ -276,7 +276,8 @@ describe("playback routes", () => {
 
         expect(parsed.searchParams.get("VideoCodec")).toBe("vp8");
         expect(parsed.searchParams.get("AudioCodec")).toBe("opus");
-        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("2500000");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("1500000");
+        expect(parsed.searchParams.get("MaxHeight")).toBe("480");
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
 
         return textResponse("webm", 200, "video/webm");

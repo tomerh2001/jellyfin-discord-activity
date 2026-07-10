@@ -43,8 +43,8 @@ export function isLinuxDiscordClient(): boolean {
 }
 
 /**
- * Linux Discord often fails MPEG-TS H.264 and progressive H.264, and progressive WebM
- * underruns under load. Prefer fMP4 HLS first (baseline H.264), then realtime WebM (VP8).
+ * Linux Discord rejects H.264 in practice (MPEG-TS, fMP4 HLS, and progressive MP4) with
+ * MEDIA_ERR_SRC_NOT_SUPPORTED. Only progressive WebM has been observed to play.
  */
 export function prefersForcedWebm(): boolean {
   return isLinuxDiscordClient();
@@ -52,7 +52,7 @@ export function prefersForcedWebm(): boolean {
 
 /** @deprecated Prefer clientPlaybackLadder. */
 export function prefersForcedHls(): boolean {
-  return isLinuxDiscordClient();
+  return false;
 }
 
 /** @deprecated Use clientPlaybackLadder. */
@@ -63,17 +63,18 @@ export function prefersDirectPlayMethod(): boolean {
 /** Preferred playback ladder for this client (first entry is the initial attempt). */
 export function clientPlaybackLadder(): Array<"hls" | "direct" | "webm"> {
   if (isLinuxDiscordClient()) {
-    // 1) fMP4 HLS (baseline H.264) — smooth segments if the client accepts H.264 in fMP4
-    // 2) realtime progressive WebM (VP8) — works when H.264 is rejected, tuned for encode speed
-    // 3) progressive MP4 last resort
-    return ["hls", "webm", "direct"];
+    // H.264 paths fail hard on Linux Discord; do not waste time on them.
+    // Progressive WebM is the only working path (encode must stay realtime).
+    return ["webm"];
   }
 
   return ["hls", "direct", "webm"];
 }
 
-/** Minimum forward buffer (seconds) before autoplay of progressive streams. */
-export const progressiveMinBufferSeconds = 6;
+/** Wall-clock soak before first play of progressive live-transcodes (Electron often reports buffered=0). */
+export const progressiveMinSoakMs = 10_000;
+/** Prefer this much reported buffer when the browser exposes TimeRanges. */
+export const progressiveMinBufferSeconds = 8;
 
 export function probeClientMediaCapabilities(video?: HTMLVideoElement | null): ClientMediaCapabilities {
   const probe = video ?? (typeof document !== "undefined" ? document.createElement("video") : null);
@@ -252,16 +253,22 @@ export function bufferedAheadSeconds(video: HTMLVideoElement): number {
   }
 }
 
-/** Wait until progressive media has enough forward buffer, or timeout. */
+/**
+ * Wait before playing progressive live-transcodes.
+ * Discord/Electron often keeps `buffered` empty for indefinite-length progressive streams,
+ * so we combine wall-clock soak + readyState + optional TimeRanges.
+ */
 export async function waitForProgressiveBuffer(
   video: HTMLVideoElement,
-  minSeconds: number,
-  timeoutMs = 20_000
-): Promise<{ ready: boolean; bufferedSeconds: number }> {
+  minSeconds: number = progressiveMinBufferSeconds,
+  soakMs: number = progressiveMinSoakMs
+): Promise<{ ready: boolean; bufferedSeconds: number; readyState: number; soakedMs: number }> {
+  const started = Date.now();
+  video.pause();
+
   return new Promise((resolve) => {
     let settled = false;
     let poll = 0;
-    let timeout = 0;
 
     const finish = (ready: boolean) => {
       if (settled) {
@@ -271,18 +278,29 @@ export async function waitForProgressiveBuffer(
       settled = true;
       video.removeEventListener("progress", onProgress);
       video.removeEventListener("canplay", onProgress);
+      video.removeEventListener("canplaythrough", onProgress);
       video.removeEventListener("loadeddata", onProgress);
       if (poll) {
         window.clearInterval(poll);
       }
-      if (timeout) {
-        window.clearTimeout(timeout);
-      }
-      resolve({ ready, bufferedSeconds: bufferedAheadSeconds(video) });
+      resolve({
+        ready,
+        bufferedSeconds: bufferedAheadSeconds(video),
+        readyState: video.readyState,
+        soakedMs: Date.now() - started
+      });
     };
 
     const onProgress = () => {
-      if (bufferedAheadSeconds(video) >= minSeconds) {
+      const elapsed = Date.now() - started;
+      const ahead = bufferedAheadSeconds(video);
+      // HAVE_FUTURE_DATA (3) or HAVE_ENOUGH_DATA (4), and either enough ranges or full soak.
+      if (video.readyState >= 3 && (ahead >= minSeconds || elapsed >= soakMs)) {
+        finish(true);
+        return;
+      }
+
+      if (ahead >= minSeconds) {
         finish(true);
       }
     };
@@ -290,13 +308,15 @@ export async function waitForProgressiveBuffer(
     onProgress();
     video.addEventListener("progress", onProgress);
     video.addEventListener("canplay", onProgress);
+    video.addEventListener("canplaythrough", onProgress);
     video.addEventListener("loadeddata", onProgress);
+    poll = window.setInterval(onProgress, 200);
 
-    // Some Electron builds under-report progress events.
-    poll = window.setInterval(onProgress, 250);
-    timeout = window.setTimeout(() => {
-      finish(bufferedAheadSeconds(video) >= minSeconds * 0.5);
-    }, timeoutMs);
+    // Hard cap: never block forever if the stream never signals readiness.
+    window.setTimeout(() => {
+      const ahead = bufferedAheadSeconds(video);
+      finish(ahead > 0 || video.readyState >= 2);
+    }, soakMs + 5_000);
   });
 }
 

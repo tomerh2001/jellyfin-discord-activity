@@ -160,13 +160,11 @@ If playback works but looks much softer than Jellyfin direct playback:
 
 If the Linux Discord client fails while Chrome or Windows Discord works:
 
-1. Discord Linux Electron often rejects **MPEG-TS H.264** and progressive H.264 with `MEDIA_ERR_SRC_NOT_SUPPORTED` even when `canPlayType` says `"probably"`.
-2. Progressive **VP9 WebM** can play but often **stalls every few seconds**: live-transcode + WebM clusters + no `Accept-Ranges`, and VP9 software encode frequently falls behind realtime (worse with multiple Linux viewers each triggering a transcode).
-3. Linux ladder is therefore: **fMP4 HLS (baseline H.264)** → **realtime VP8/Opus WebM** (capped ~2.5 Mbps / 720p, prebuffered) → progressive MP4.
-4. Windows/Web: remux when possible, else fMP4 HLS → progressive MP4 → WebM. Unaffected by the Linux-first WebM path.
-5. hls.js workers stay disabled; progressive paths wait for ~6s of forward buffer before autoplay.
-6. For multi-viewer parties, prefer a Windows/Web host when possible; each Linux WebM client is a full software transcode on Jellyfin.
-7. Diagnostics + `logs/app/app.log` (`Playback prepared`) remain the best debug combo.
+1. Discord Linux Electron rejects **H.264** (MPEG-TS HLS, fMP4 HLS, and progressive MP4) with `MEDIA_ERR_SRC_NOT_SUPPORTED` even when `canPlayType` says `"probably"`.
+2. Linux therefore uses **only progressive VP8/Opus WebM** (~480p / 1.5 Mbps) with a ~10s soak before play. Electron often reports `buffered=0` for live progressive streams, so soak uses wall-clock + `readyState` as well as TimeRanges.
+3. Stalls on WebM still mean the Jellyfin encode is falling behind realtime (CPU). Each Linux viewer is a separate software transcode — prefer Windows/Web hosts for multi-person watch parties.
+4. Windows/Web: remux when possible, else fMP4 HLS → progressive MP4 → WebM. Unchanged.
+5. Diagnostics + `logs/app/app.log` (`Playback prepared`) remain the best debug combo.
 
 ## Jellyfin Auth Mode Problems
 

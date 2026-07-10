@@ -8,6 +8,7 @@ import {
   clientPlaybackLadder,
   prefersForcedWebm,
   progressiveMinBufferSeconds,
+  progressiveMinSoakMs,
   probeClientMediaCapabilities,
   probeStreamUrl,
   waitForProgressiveBuffer,
@@ -136,16 +137,12 @@ function nextFallbackMethod(current: PreferredPlayMethod, ladder: PreferredPlayM
 function methodNotice(method: PreferredPlayMethod, linuxClient: boolean): string | undefined {
   if (method === "webm") {
     return linuxClient
-      ? "Linux Discord: realtime VP8/Opus WebM (prebuffering for smoother playback)."
+      ? "Linux Discord: VP8/Opus WebM @480p (H.264 unsupported; prebuffering for smoother play)."
       : "Trying VP8/Opus WebM compatibility stream.";
   }
 
   if (method === "direct") {
     return "Trying forced H.264/AAC progressive MP4.";
-  }
-
-  if (linuxClient) {
-    return "Linux Discord: trying fMP4 HLS (baseline H.264) for smooth multi-viewer streaming.";
   }
 
   return undefined;
@@ -175,10 +172,12 @@ export function WatchPlayer({
   const videoFrameRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | undefined>(undefined);
   const preparedKeyRef = useRef<string | undefined>(undefined);
+  const prepareGenerationRef = useRef(0);
   const playbackLadder = clientPlaybackLadder() as PreferredPlayMethod[];
   const initialMethod = playbackLadder[0] ?? "hls";
   const activeStageRef = useRef<PreferredPlayMethod>(initialMethod);
   const suppressEventsUntilRef = useRef(0);
+  const progressiveBufferingRef = useRef(false);
   const renewInFlightRef = useRef(false);
   const loggedPlaySuccessRef = useRef(false);
   const diagnosticsRef = useRef<PlaybackDiagnostics>(initialDiagnostics(initialMethod, playbackLadder));
@@ -191,7 +190,13 @@ export function WatchPlayer({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
   const linuxClient = prefersForcedWebm();
-  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>(initialMethod);
+  // Bound to itemId so a new media selection never prepares with a stale fallback method.
+  const [playbackSession, setPlaybackSession] = useState<{ itemId: string | undefined; method: PreferredPlayMethod; generation: number }>(() => ({
+    itemId: undefined,
+    method: initialMethod,
+    generation: 0
+  }));
+  const preferredPlayMethod = playbackSession.method;
   const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => initialDiagnostics(initialMethod, playbackLadder));
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string | undefined>();
@@ -227,9 +232,15 @@ export function WatchPlayer({
     activeStageRef.current = start;
     renewInFlightRef.current = false;
     loggedPlaySuccessRef.current = false;
+    progressiveBufferingRef.current = false;
+    prepareGenerationRef.current += 1;
     setPlayerState({ status: "idle" });
     setPlayerNotice(methodNotice(start, linuxClient));
-    setPreferredPlayMethod(start);
+    setPlaybackSession({
+      itemId,
+      method: start,
+      generation: prepareGenerationRef.current
+    });
     const reset = initialDiagnostics(start, ladder, videoRef.current);
     diagnosticsRef.current = reset;
     setDiagnostics(reset);
@@ -332,11 +343,15 @@ export function WatchPlayer({
       return;
     }
 
+    if (progressiveBufferingRef.current) {
+      return;
+    }
+
     const delayMs = Math.max(0, remotePlayerEvent.targetServerTs - (Date.now() + clockOffsetMs));
     const timeout = window.setTimeout(() => {
       const video = videoRef.current;
 
-      if (!video) {
+      if (!video || progressiveBufferingRef.current) {
         return;
       }
 
@@ -354,7 +369,12 @@ export function WatchPlayer({
       return;
     }
 
-    const prepareKey = `${itemId}:${mediaSourceId ?? ""}:${audioStreamIndex ?? ""}:${subtitleStreamIndex ?? ""}:${preferredPlayMethod}`;
+    // Ignore prepares until the session has been rebound to this itemId.
+    if (playbackSession.itemId !== itemId) {
+      return;
+    }
+
+    const prepareKey = `${itemId}:${mediaSourceId ?? ""}:${audioStreamIndex ?? ""}:${subtitleStreamIndex ?? ""}:${preferredPlayMethod}:${playbackSession.generation}`;
 
     if (preparedKeyRef.current === prepareKey) {
       return;
@@ -363,6 +383,7 @@ export function WatchPlayer({
     preparedKeyRef.current = prepareKey;
     const token = appToken;
     const selectedItemId = itemId;
+    const sessionGeneration = playbackSession.generation;
     const controller = new AbortController();
 
     async function prepareSelectedPlayback() {
@@ -393,7 +414,7 @@ export function WatchPlayer({
           ...(shouldSendPreferredMethod ? { preferredPlayMethod } : {})
         });
 
-        if (controller.signal.aborted || !videoRef.current) {
+        if (controller.signal.aborted || !videoRef.current || sessionGeneration !== prepareGenerationRef.current) {
           return;
         }
 
@@ -401,6 +422,10 @@ export function WatchPlayer({
         const previousTime = video.currentTime;
         const wasPlaying = !video.paused && !video.ended;
         const probe = await probeStreamUrl(response.playback.streamUrl);
+
+        if (controller.signal.aborted || sessionGeneration !== prepareGenerationRef.current) {
+          return;
+        }
 
         pushAttempt({
           stage: "probe",
@@ -451,11 +476,14 @@ export function WatchPlayer({
           video.currentTime = previousTime;
         }
 
-        // Progressive live-transcodes underrun unless we wait for a forward buffer first.
+        // Progressive live-transcodes underrun unless we soak before play.
         if (response.playback.playMethod === "direct") {
-          setPlayerNotice("Buffering progressive stream before play…");
-          const bufferWait = await waitForProgressiveBuffer(video, progressiveMinBufferSeconds);
-          if (controller.signal.aborted) {
+          progressiveBufferingRef.current = true;
+          video.pause();
+          setPlayerNotice(`Buffering progressive stream (~${Math.round(progressiveMinSoakMs / 1000)}s)…`);
+          const bufferWait = await waitForProgressiveBuffer(video, progressiveMinBufferSeconds, progressiveMinSoakMs);
+          if (controller.signal.aborted || sessionGeneration !== prepareGenerationRef.current) {
+            progressiveBufferingRef.current = false;
             return;
           }
 
@@ -465,9 +493,10 @@ export function WatchPlayer({
             playMethod: response.playback.playMethod,
             streamUrl: response.playback.streamUrl,
             message: bufferWait.ready
-              ? `Progressive buffer ready (${bufferWait.bufferedSeconds.toFixed(1)}s ahead).`
-              : `Progressive buffer partial (${bufferWait.bufferedSeconds.toFixed(1)}s ahead); starting anyway.`
+              ? `Progressive ready (buffered=${bufferWait.bufferedSeconds.toFixed(1)}s readyState=${bufferWait.readyState} soaked=${bufferWait.soakedMs}ms).`
+              : `Progressive partial (buffered=${bufferWait.bufferedSeconds.toFixed(1)}s readyState=${bufferWait.readyState} soaked=${bufferWait.soakedMs}ms); starting.`
           });
+          progressiveBufferingRef.current = false;
           setPlayerNotice(undefined);
         }
 
@@ -497,7 +526,7 @@ export function WatchPlayer({
           ...(response.playback.audioCodec ? { audioCodec: response.playback.audioCodec } : { audioCodec: undefined })
         }));
       } catch (error) {
-        if (controller.signal.aborted) {
+        if (controller.signal.aborted || sessionGeneration !== prepareGenerationRef.current) {
           return;
         }
 
@@ -515,7 +544,7 @@ export function WatchPlayer({
     void prepareSelectedPlayback();
 
     return () => controller.abort();
-  }, [appToken, audioStreamIndex, canPrepare, itemId, linuxClient, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
+  }, [appToken, audioStreamIndex, canPrepare, itemId, linuxClient, mediaSourceId, playbackSession, preferredPlayMethod, subtitleStreamIndex]);
 
   useEffect(() => {
     if (isHost || playerState.status !== "ready" || !remoteStateUpdate || !videoRef.current) {
@@ -748,7 +777,12 @@ export function WatchPlayer({
         lastError: message
       }));
       setPlayerNotice(methodNotice(fallback, linuxClient));
-      setPreferredPlayMethod(fallback);
+      prepareGenerationRef.current += 1;
+      setPlaybackSession((current) => ({
+        itemId: current.itemId,
+        method: fallback,
+        generation: prepareGenerationRef.current
+      }));
       return;
     }
 

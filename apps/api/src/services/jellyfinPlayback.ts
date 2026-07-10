@@ -505,12 +505,11 @@ function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: M
 function buildTranscodeWebmPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource, playSessionId?: string): string {
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.webm`, "https://jellyfin.local");
   const params = url.searchParams;
-  // Progressive WebM is live-transcoded without ranges. VP9 often cannot sustain realtime
-  // software encode, which produces 2–5s underruns. Prefer faster VP8 at a modest bitrate
-  // so the encoder can stay ahead of the player (critical for multi-viewer watch parties).
-  const streamingBitrate = Math.min(qualityCap(env, input, 2_500_000), 2_500_000);
-  const audioBitrate = 96_000;
-  const videoBitrate = Math.max(600_000, streamingBitrate - audioBitrate);
+  // Progressive WebM is live-transcoded without ranges. Encoder must stay ahead of realtime
+  // or the player underruns every few seconds. Use fast VP8 at 480p / ~1.5 Mbps.
+  const streamingBitrate = Math.min(qualityCap(env, input, 1_500_000), 1_500_000);
+  const audioBitrate = 64_000;
+  const videoBitrate = Math.max(500_000, streamingBitrate - audioBitrate);
 
   params.set("MediaSourceId", source.Id);
   params.set("VideoCodec", "vp8");
@@ -518,12 +517,13 @@ function buildTranscodeWebmPath(env: AppEnv, input: PlaybackInfoInput, source: M
   params.set("VideoBitrate", String(videoBitrate));
   params.set("AudioBitrate", String(audioBitrate));
   params.set("MaxStreamingBitrate", String(streamingBitrate));
-  params.set("MaxWidth", String(Math.min(env.STREAM_MAX_WIDTH, 1280)));
-  params.set("MaxHeight", String(Math.min(env.STREAM_MAX_HEIGHT, 720)));
+  params.set("MaxWidth", String(Math.min(env.STREAM_MAX_WIDTH, 854)));
+  params.set("MaxHeight", String(Math.min(env.STREAM_MAX_HEIGHT, 480)));
+  params.set("MaxFramerate", "30");
   params.set("TranscodingMaxAudioChannels", "2");
   params.set("MaxAudioChannels", "2");
   params.set("CopyTimestamps", "true");
-  // Smaller clusters reduce multi-second stalls between WebM cluster flushes.
+  // Hint shorter clusters when Jellyfin/ffmpeg honors segment length for webm.
   params.set("SegmentLength", "1");
 
   if (playSessionId) {

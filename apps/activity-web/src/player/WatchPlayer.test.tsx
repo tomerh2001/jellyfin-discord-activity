@@ -14,7 +14,7 @@ vi.mock("./hls.js", () => ({
   prefersForcedWebm: vi.fn(() => false),
   prefersForcedHls: vi.fn(() => false),
   prefersDirectPlayMethod: vi.fn(() => false),
-  clientPlaybackLadder: vi.fn(() => ["hls", "direct", "webm"]),
+  clientPlaybackLadder: vi.fn(() => ["hls", "direct", "webm"] as const),
   probeClientMediaCapabilities: vi.fn(() => ({
     hlsJsSupported: true,
     mediaSourceSupported: true,
@@ -31,8 +31,9 @@ vi.mock("./hls.js", () => ({
     status: 206,
     contentType: "application/vnd.apple.mpegurl"
   })),
-  waitForProgressiveBuffer: vi.fn(async () => ({ ready: true, bufferedSeconds: 8 })),
-  progressiveMinBufferSeconds: 6
+  waitForProgressiveBuffer: vi.fn(async () => ({ ready: true, bufferedSeconds: 8, readyState: 4, soakedMs: 1000 })),
+  progressiveMinBufferSeconds: 8,
+  progressiveMinSoakMs: 1000
 }));
 
 describe("WatchPlayer", () => {
