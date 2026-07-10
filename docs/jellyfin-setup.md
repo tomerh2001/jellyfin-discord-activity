@@ -10,7 +10,7 @@ JELLYFIN_ALLOW_CUSTOM_SERVERS=false
 JELLYFIN_AUTH_MODE=per-user
 JELLYFIN_SHARED_USERNAME=
 JELLYFIN_SHARED_PASSWORD=
-STREAM_TICKET_TTL_SECONDS=300
+STREAM_TICKET_TTL_SECONDS=14400
 STREAM_MAX_BITRATE=20000000
 STREAM_MAX_WIDTH=1920
 STREAM_MAX_HEIGHT=1080
@@ -143,9 +143,9 @@ When a user clicks `Prepare playback`, the backend:
 
 The browser never receives a Jellyfin access token. HLS playlist entries are rewritten through `/media/hls/...`, and direct streams support `Range` requests through `/media/direct/...`.
 
-The Activity uses HLS first because it works best in Chrome and the Windows Discord client. If the current client rejects HLS, the frontend retries only that local player with `preferredPlayMethod=direct`. That fallback asks Jellyfin for an H.264/AAC MP4 stream through `/media/direct/...`; it does not change the room state and does not force other viewers away from HLS.
+Playback selection is remux-first for browser-safe codecs (H.264/AAC and similar when Jellyfin reports DirectPlay or DirectStream). Incompatible media uses HLS with Jellyfin's `TranscodingUrl` when available. If the current client rejects HLS, only that local player retries with `preferredPlayMethod=direct`; other participants are unchanged.
 
-Use `STREAM_PROXY_MODE=hls-first` for the normal browser path. Use `STREAM_PROXY_MODE=direct` only when you specifically want to test or force direct stream proxying.
+Use `STREAM_PROXY_MODE=hls-first` for normal Discord clients. Use `STREAM_PROXY_MODE=direct` only when you want to force progressive/direct delivery for every prepare.
 
 ## Verifying From The Container
 

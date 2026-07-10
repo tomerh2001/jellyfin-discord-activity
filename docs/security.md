@@ -10,7 +10,7 @@
 - Set `TOKEN_ENCRYPTION_KEY` to a base64-encoded 32-byte key before linking Jellyfin accounts in production.
 - Per-user Jellyfin passwords are not stored. Shared-mode `JELLYFIN_SHARED_PASSWORD` is read from the backend environment and should be protected like any other server secret.
 - Jellyfin access tokens are encrypted before being written under `/data`.
-- Stream tickets are short-lived bearer URLs for `/media/...`; keep `STREAM_TICKET_TTL_SECONDS` low and use HTTPS so tickets are not exposed on the network.
+- Stream tickets are bearer URLs for `/media/...`. Default TTL is long enough for feature films (`STREAM_TICKET_TTL_SECONDS=14400`) and slides while the ticket is actively used, but tickets are still capped by the creating app session and should only be served over HTTPS.
 - WebSocket sync uses the short-lived app session JWT in the `/ws` query string. Use `wss://` in production and avoid logging query strings at the reverse proxy.
 - The backend enforces host-only shared playback commands; participant player events must not mutate room playback state.
 - The backend applies an app-wide rate limit. Tune `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW` for your deployment and set `TRUST_PROXY=true` only when the app is behind a trusted reverse proxy.

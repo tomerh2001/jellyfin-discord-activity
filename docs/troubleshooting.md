@@ -133,9 +133,19 @@ If playback never prepares:
 - Confirm the app container can reach `JELLYFIN_DEFAULT_SERVER_URL`.
 - Confirm `STREAM_MAX_BITRATE` is not higher than your Jellyfin server can handle.
 
-If playback works but looks much softer than Jellyfin direct playback, check both bitrate and resolution. The app uses an H.264/AAC HLS stream for Discord compatibility, so very high bitrate source files will usually be transcoded. The defaults `STREAM_MAX_BITRATE=20000000`, `STREAM_MAX_WIDTH=1920`, and `STREAM_MAX_HEIGHT=1080` are intended to preserve good 1080p quality while remaining practical for several viewers. For high-motion 1080p or 4K sources, try `STREAM_MAX_BITRATE=30000000` or `40000000`; for 4K testing, also raise `STREAM_MAX_WIDTH` and `STREAM_MAX_HEIGHT` if your Jellyfin server CPU/GPU and upload bandwidth can handle one stream per Activity participant.
+If playback works but looks much softer than Jellyfin direct playback:
 
-If the Linux Discord client rejects HLS while Chrome or Windows Discord works, the frontend should automatically retry that client with the MP4 compatibility fallback. Other participants remain on HLS. During fallback you may see the player status change to `direct`; that direct path is still proxied through the app and still forces H.264/AAC for Discord compatibility.
+- Browser-safe sources (H.264/AAC in MP4 and similar) should **remux/direct-play** through `/media/direct/...` without re-encoding. The player status pill shows `direct` in that case.
+- Only incompatible codecs (HEVC, TrueHD, etc.) are forced through H.264/AAC HLS or MP4 transcoding under `STREAM_MAX_BITRATE`, `STREAM_MAX_WIDTH`, and `STREAM_MAX_HEIGHT`.
+- Defaults are `STREAM_MAX_BITRATE=20000000`, `STREAM_MAX_WIDTH=1920`, `STREAM_MAX_HEIGHT=1080`. Raise those only for forced transcodes / 4K if your Jellyfin host can handle it.
+- Stream tickets default to `STREAM_TICKET_TTL_SECONDS=14400` and slide forward while the proxy is actively used (still capped by the app session).
+
+If the Linux Discord client rejects HLS while Chrome or Windows Discord works:
+
+1. The player disables hls.js workers by default (Discord iframes are unreliable with workers).
+2. On fatal HLS errors, only that client retries with `preferredPlayMethod=direct` (remux when possible, otherwise H.264/AAC MP4). Other participants are unchanged.
+3. Known Linux Discord user agents may start on the direct path immediately.
+4. Open **Show diagnostics** / **Copy diagnostics** in the player footer and share the JSON when reporting playback bugs.
 
 ## Jellyfin Auth Mode Problems
 

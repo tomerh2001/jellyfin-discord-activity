@@ -10,7 +10,8 @@ vi.mock("../api/client.js", () => ({
 }));
 
 vi.mock("./hls.js", () => ({
-  attachVideoSource: vi.fn(() => vi.fn())
+  attachVideoSource: vi.fn(() => vi.fn()),
+  prefersDirectPlayMethod: vi.fn(() => false)
 }));
 
 describe("WatchPlayer", () => {
@@ -42,7 +43,10 @@ describe("WatchPlayer", () => {
     expect(vi.mocked(attachVideoSource)).toHaveBeenCalledWith(expect.any(HTMLVideoElement), {
       playMethod: "hls",
       streamUrl: "/media/hls/ticket/master.m3u8"
-    }, expect.any(Function));
+    }, expect.objectContaining({
+      enableWorker: false,
+      onError: expect.any(Function)
+    }));
   });
 
   it("falls back to a direct MP4 prepare when HLS fails in the client", async () => {
@@ -55,7 +59,8 @@ describe("WatchPlayer", () => {
         streamUrl: "/media/direct/ticket/stream.mp4"
       }));
     attachVideoSourceMock
-      .mockImplementationOnce((_video, _source, onError) => {
+      .mockImplementationOnce((_video, _source, options) => {
+        const onError = typeof options === "function" ? options : options?.onError;
         window.setTimeout(() => onError?.("HLS playback failed: bufferAppendError."), 0);
         return vi.fn();
       })
@@ -77,12 +82,15 @@ describe("WatchPlayer", () => {
         subtitleStreamIndex: 3,
         preferredPlayMethod: "direct"
       });
+      expect(attachVideoSourceMock).toHaveBeenLastCalledWith(expect.any(HTMLVideoElement), {
+        playMethod: "direct",
+        streamUrl: "/media/direct/ticket/stream.mp4"
+      }, expect.objectContaining({
+        enableWorker: false,
+        onError: expect.any(Function)
+      }));
     });
-    expect(attachVideoSourceMock).toHaveBeenLastCalledWith(expect.any(HTMLVideoElement), {
-      playMethod: "direct",
-      streamUrl: "/media/direct/ticket/stream.mp4"
-    }, expect.any(Function));
-    expect(screen.getByText("Using the MP4 compatibility fallback for this client.")).toBeInTheDocument();
+    expect(screen.getByText("Using the MP4 compatibility path for this client.")).toBeInTheDocument();
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {
@@ -165,7 +173,7 @@ function playbackResponse(overrides: Partial<PlaybackPrepareResponse["playback"]
       mediaSourceId: "media-1",
       playMethod: "hls" as const,
       streamUrl: "/media/hls/ticket/master.m3u8",
-      expiresAt: "2026-07-09T12:00:00.000Z",
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       selectedAudioStreamIndex: 1,
       selectedSubtitleStreamIndex: -1,
       audioTracks: [{

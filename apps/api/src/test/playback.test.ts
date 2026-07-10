@@ -67,8 +67,11 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
         expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
+        expect(parsed.searchParams.get("VideoBitrate")).toBe("19616000");
+        expect(parsed.searchParams.get("AudioBitrate")).toBe("384000");
         expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
         expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
+        expect(parsed.searchParams.get("SegmentContainer")).toBe("ts");
         expect(parsed.searchParams.has("SubtitleStreamIndex")).toBe(false);
         expect(parsed.searchParams.has("SubtitleMethod")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
@@ -140,7 +143,7 @@ describe("playback routes", () => {
     await app.close();
   });
 
-  it("falls back to HLS playback and rewrites playlist URLs through the media proxy", async () => {
+  it("uses Jellyfin TranscodingUrl for HLS when direct remux is unavailable", async () => {
     const app = await buildPlaybackApp();
 
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -152,15 +155,18 @@ describe("playback routes", () => {
 
       if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
         return jsonResponse({
+          PlaySessionId: "play-session-1",
           MediaSources: [{
             Id: "media-1",
+            SupportsDirectPlay: false,
+            SupportsDirectStream: false,
             SupportsTranscoding: true,
-            TranscodingUrl: "/Videos/movie-1/master.m3u8?MediaSourceId=media-1&ApiKey=secret-api-key",
+            TranscodingUrl: "/Videos/movie-1/master.m3u8?MediaSourceId=media-1&PlaySessionId=play-session-1&ApiKey=secret-api-key",
             TranscodingSubProtocol: "hls",
             TranscodingContainer: "ts",
             MediaStreams: [
-              { Type: "Video", Codec: "h264", Index: 0 },
-              { Type: "Audio", Codec: "aac", Index: 1 }
+              { Type: "Video", Codec: "hevc", Index: 0 },
+              { Type: "Audio", Codec: "truehd", Index: 1 }
             ]
           }]
         });
@@ -171,12 +177,7 @@ describe("playback routes", () => {
         const headers = new Headers(init?.headers);
 
         expect(parsed.searchParams.get("MediaSourceId")).toBe("media-1");
-        expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
-        expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
-        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
-        expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
-        expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
-        expect(parsed.searchParams.has("SegmentContainer")).toBe(false);
+        expect(parsed.searchParams.get("PlaySessionId")).toBe("play-session-1");
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
 
@@ -241,6 +242,131 @@ describe("playback routes", () => {
 
     expect(segment.statusCode).toBe(200);
     expect(segment.body).toBe("segment");
+
+    await app.close();
+  });
+
+  it("prefers static remux for browser-safe DirectPlay sources under hls-first mode", async () => {
+    const app = await buildPlaybackApp();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+
+      if (url === "https://jellyfin.example.com/Users/AuthenticateByName") {
+        return authResponse();
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
+        return jsonResponse({
+          MediaSources: [{
+            Id: "media-1",
+            Container: "mp4",
+            SupportsDirectPlay: true,
+            SupportsDirectStream: true,
+            SupportsTranscoding: true,
+            MediaStreams: [
+              { Type: "Video", Codec: "h264", Index: 0 },
+              { Type: "Audio", Codec: "aac", Index: 1 }
+            ]
+          }]
+        });
+      }
+
+      if (url === "https://jellyfin.example.com/Videos/movie-1/stream.mp4?Static=true&MediaSourceId=media-1") {
+        return textResponse("mp4-bytes", 200, "video/mp4");
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const appToken = await linkAccount(app);
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/playback/prepare",
+      headers: {
+        authorization: `Bearer ${appToken}`
+      },
+      payload: {
+        itemId: "movie-1"
+      }
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json().playback).toMatchObject({
+      itemId: "movie-1",
+      mediaSourceId: "media-1",
+      playMethod: "direct",
+      container: "mp4",
+      videoCodec: "h264",
+      audioCodec: "aac"
+    });
+    expect(prepared.json().playback.streamUrl).toMatch(/^\/media\/direct\/.+\/stream\.mp4$/);
+
+    const stream = await app.inject({
+      method: "GET",
+      url: prepared.json().playback.streamUrl as string
+    });
+
+    expect(stream.statusCode).toBe(200);
+    expect(stream.body).toBe("mp4-bytes");
+
+    await app.close();
+  });
+
+  it("slides stream ticket expiry while the media proxy is actively used", async () => {
+    const app = await buildPlaybackApp({
+      STREAM_TICKET_TTL_SECONDS: "2"
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+
+      if (url === "https://jellyfin.example.com/Users/AuthenticateByName") {
+        return authResponse();
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
+        return jsonResponse({
+          MediaSources: [{
+            Id: "media-1",
+            SupportsDirectPlay: false,
+            SupportsDirectStream: false,
+            SupportsTranscoding: true,
+            TranscodingUrl: "/Videos/movie-1/master.m3u8?MediaSourceId=media-1",
+            TranscodingSubProtocol: "hls"
+          }]
+        });
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Videos/movie-1/master.m3u8")) {
+        return textResponse("#EXTM3U\n#EXTINF:10,\nhls/main/0.ts\n", 200, "application/vnd.apple.mpegurl");
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const appToken = await linkAccount(app);
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/playback/prepare",
+      headers: {
+        authorization: `Bearer ${appToken}`
+      },
+      payload: {
+        itemId: "movie-1"
+      }
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    const streamUrl = prepared.json().playback.streamUrl as string;
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const first = await app.inject({ method: "GET", url: streamUrl });
+    expect(first.statusCode).toBe(200);
+
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const second = await app.inject({ method: "GET", url: streamUrl });
+    expect(second.statusCode).toBe(200);
 
     await app.close();
   });

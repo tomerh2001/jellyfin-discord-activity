@@ -7,11 +7,27 @@ export type PlayerSource = {
   streamUrl: string;
 };
 
+export type AttachVideoSourceOptions = {
+  /** Prefer disabling workers inside Discord iframes (Linux Electron is flaky with workers). */
+  enableWorker?: boolean;
+  onError?: (message: string) => void;
+};
+
 export function isHlsUrl(url: string): boolean {
-  return url.endsWith(".m3u8");
+  return url.includes(".m3u8");
 }
 
-export function attachVideoSource(video: HTMLVideoElement, source: PlayerSource, onError?: (message: string) => void): () => void {
+export function attachVideoSource(
+  video: HTMLVideoElement,
+  source: PlayerSource,
+  onErrorOrOptions?: ((message: string) => void) | AttachVideoSourceOptions
+): () => void {
+  const options: AttachVideoSourceOptions = typeof onErrorOrOptions === "function"
+    ? { onError: onErrorOrOptions }
+    : (onErrorOrOptions ?? {});
+  const onError = options.onError;
+  const enableWorker = options.enableWorker ?? false;
+
   if (source.playMethod === "hls" || isHlsUrl(source.streamUrl)) {
     if (Hls.isSupported()) {
       let networkRecoveryAttempts = 0;
@@ -20,7 +36,9 @@ export function attachVideoSource(video: HTMLVideoElement, source: PlayerSource,
         abrEwmaDefaultEstimate: highQualityBandwidthEstimate,
         abrEwmaDefaultEstimateMax: highQualityBandwidthEstimate,
         capLevelToPlayerSize: false,
-        enableWorker: true
+        enableWorker,
+        lowLatencyMode: false,
+        backBufferLength: 90
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (!data.fatal) {
@@ -81,6 +99,19 @@ export function attachVideoSource(video: HTMLVideoElement, source: PlayerSource,
 
   video.src = source.streamUrl;
   return () => clearVideo(video);
+}
+
+export function prefersDirectPlayMethod(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+
+  const ua = navigator.userAgent.toLowerCase();
+  const isLinux = ua.includes("linux") && !ua.includes("android");
+  const isDiscord = ua.includes("discord") || Boolean((window as Window & { DiscordNative?: unknown }).DiscordNative);
+
+  // Linux Discord (Electron) is the known-bad HLS client in this project.
+  return isLinux && isDiscord;
 }
 
 function clearVideo(video: HTMLVideoElement): void {

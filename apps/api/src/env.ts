@@ -27,7 +27,7 @@ export const envSchema = z.object({
   JELLYFIN_AUTH_MODE: z.enum(["per-user", "shared"]).default("per-user"),
   JELLYFIN_SHARED_USERNAME: z.string().default(""),
   JELLYFIN_SHARED_PASSWORD: z.string().default(""),
-  STREAM_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  STREAM_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(14_400),
   STREAM_MAX_BITRATE: z.coerce.number().int().positive().default(20_000_000),
   STREAM_MAX_WIDTH: z.coerce.number().int().positive().default(1920),
   STREAM_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),

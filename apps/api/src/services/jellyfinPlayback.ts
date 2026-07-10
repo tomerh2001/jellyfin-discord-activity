@@ -17,6 +17,9 @@ const mediaSourceSchema = z.object({
     Type: z.string().optional(),
     Codec: z.string().nullable().optional(),
     Index: z.number().int().optional(),
+    Width: z.number().int().optional(),
+    Height: z.number().int().optional(),
+    BitRate: z.number().int().optional(),
     DisplayTitle: z.string().nullable().optional(),
     Title: z.string().nullable().optional(),
     Language: z.string().nullable().optional(),
@@ -27,6 +30,7 @@ const mediaSourceSchema = z.object({
 });
 
 const playbackInfoResponseSchema = z.object({
+  PlaySessionId: z.string().nullable().optional(),
   MediaSources: z.array(mediaSourceSchema).default([])
 });
 
@@ -64,6 +68,20 @@ export type PlaybackTrack = {
   isForced?: boolean;
   isExternal?: boolean;
 };
+
+type MediaSource = z.infer<typeof mediaSourceSchema>;
+
+type PlaybackQuality = {
+  maxStreamingBitrate: number;
+  maxWidth: number;
+  maxHeight: number;
+  videoBitrate: number;
+  audioBitrate: number;
+};
+
+const browserVideoCodecs = new Set(["h264", "avc", "avc1", "vp8", "vp9", "av1"]);
+const browserAudioCodecs = new Set(["aac", "mp3", "mp4a", "opus", "vorbis", "flac"]);
+const browserContainers = new Set(["mp4", "m4v", "webm", "mov"]);
 
 export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, input: PlaybackInfoInput): Promise<PreparedPlayback> {
   const token = decryptString(env, account.encryptedAccessToken);
@@ -125,35 +143,47 @@ export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, inp
     throw new JellyfinError("jellyfin_media_source_missing", "No playable Jellyfin media source was returned.", response.status, payload);
   }
 
-  return selectPlaybackMethod(env, input, source);
+  return selectPlaybackMethod(env, input, source, result.PlaySessionId ?? undefined);
 }
 
 function selectPlaybackMethod(
   env: AppEnv,
   input: PlaybackInfoInput,
-  source: z.infer<typeof mediaSourceSchema>
+  source: MediaSource,
+  playSessionId?: string
 ): PreparedPlayback {
   const streams = source.MediaStreams ?? [];
   const audioTracks = streams.filter((stream) => stream.Type === "Audio" && stream.Index !== undefined).map((stream) => mapTrack(stream, "Audio"));
   const subtitleTracks = streams.filter((stream) => stream.Type === "Subtitle" && stream.Index !== undefined).map((stream) => mapTrack(stream, "Subtitle"));
   const selectedAudioStreamIndex = input.audioStreamIndex ?? audioTracks.find((track) => track.isDefault)?.index ?? audioTracks[0]?.index;
   const selectedSubtitleStreamIndex = input.subtitleStreamIndex ?? -1;
-  const videoCodec = streams.find((stream) => stream.Type === "Video")?.Codec ?? undefined;
-  const audioCodec = streams.find((stream) => stream.Type === "Audio")?.Codec ?? undefined;
+  const selectedAudio = selectedAudioStreamIndex !== undefined
+    ? streams.find((stream) => stream.Type === "Audio" && stream.Index === selectedAudioStreamIndex)
+    : streams.find((stream) => stream.Type === "Audio");
+  const videoStream = streams.find((stream) => stream.Type === "Video");
+  const videoCodec = videoStream?.Codec ?? undefined;
+  const audioCodec = selectedAudio?.Codec ?? streams.find((stream) => stream.Type === "Audio")?.Codec ?? undefined;
   const tracks = {
     ...(selectedAudioStreamIndex !== undefined ? { selectedAudioStreamIndex } : {}),
     selectedSubtitleStreamIndex,
     audioTracks,
     subtitleTracks
   };
+  const remuxEligible = canRemuxBrowserSafe(source, videoCodec, audioCodec);
+  const forceDirect = input.preferredPlayMethod === "direct" || env.STREAM_PROXY_MODE === "direct";
 
-  if (input.preferredPlayMethod === "direct") {
+  // Client or deployment asked for progressive/direct delivery.
+  if (forceDirect) {
+    if (remuxEligible) {
+      return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
+    }
+
     if (source.SupportsTranscoding !== false) {
       return {
         itemId: input.itemId,
         mediaSourceId: source.Id,
         playMethod: "direct",
-        upstreamPath: buildTranscodeHttpPath(env, input, source),
+        upstreamPath: buildTranscodeHttpPath(env, input, source, playSessionId),
         container: "mp4",
         videoCodec: "h264",
         audioCodec: "aac",
@@ -161,31 +191,24 @@ function selectPlaybackMethod(
       };
     }
 
-    if (source.SupportsDirectPlay === false && source.SupportsDirectStream === false) {
-      throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
-    }
-
-    const container = source.Container?.split(",")[0]?.trim() || "mp4";
-
-    return {
-      itemId: input.itemId,
-      mediaSourceId: source.Id,
-      playMethod: "direct",
-      upstreamPath: buildDirectPath(input, source.Id, container),
-      container,
-      ...(videoCodec ? { videoCodec } : {}),
-      ...(audioCodec ? { audioCodec } : {}),
-      ...tracks
-    };
+    throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
   }
 
-  if (env.STREAM_PROXY_MODE !== "direct" && source.SupportsTranscoding !== false) {
+  // Prefer lossless remux when Jellyfin says the source is browser-safe.
+  if (remuxEligible) {
+    return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
+  }
+
+  // Otherwise use HLS (prefer Jellyfin's TranscodingUrl when it is HLS).
+  if (source.SupportsTranscoding !== false || isHlsTranscodingUrl(source)) {
+    const hlsPath = resolveHlsPath(env, input, source, playSessionId);
+
     return {
       itemId: input.itemId,
       mediaSourceId: source.Id,
       playMethod: "hls",
-      upstreamPath: buildHlsPath(env, input, source),
-      ...(source.TranscodingContainer ? { container: source.TranscodingContainer } : {}),
+      upstreamPath: hlsPath,
+      ...(source.TranscodingContainer ? { container: source.TranscodingContainer } : { container: "ts" }),
       ...(videoCodec ? { videoCodec } : {}),
       ...(audioCodec ? { audioCodec } : {}),
       ...tracks
@@ -196,13 +219,32 @@ function selectPlaybackMethod(
     throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
   }
 
-  const container = source.Container?.split(",")[0]?.trim() || "mp4";
+  return buildRemuxPlayback(input, source, videoCodec, audioCodec, tracks);
+}
+
+function buildRemuxPlayback(
+  input: PlaybackInfoInput,
+  source: MediaSource,
+  videoCodec: string | undefined,
+  audioCodec: string | undefined,
+  tracks: {
+    selectedAudioStreamIndex?: number;
+    selectedSubtitleStreamIndex: number;
+    audioTracks: PlaybackTrack[];
+    subtitleTracks: PlaybackTrack[];
+  }
+): PreparedPlayback {
+  const sourceContainer = firstContainer(source.Container);
+  const container = isBrowserContainer(sourceContainer) ? sourceContainer : "mp4";
+  const useStatic = isBrowserContainer(sourceContainer) && source.SupportsDirectPlay !== false;
 
   return {
     itemId: input.itemId,
     mediaSourceId: source.Id,
     playMethod: "direct",
-    upstreamPath: buildDirectPath(input, source.Id, container),
+    upstreamPath: useStatic
+      ? buildDirectPath(input, source.Id, container)
+      : buildRemuxStreamPath(input, source.Id, container),
     container,
     ...(videoCodec ? { videoCodec } : {}),
     ...(audioCodec ? { audioCodec } : {}),
@@ -210,21 +252,104 @@ function selectPlaybackMethod(
   };
 }
 
-type PlaybackQuality = {
-  maxStreamingBitrate: number;
-  maxWidth: number;
-  maxHeight: number;
-};
+function canRemuxBrowserSafe(
+  source: MediaSource,
+  videoCodec: string | undefined,
+  audioCodec: string | undefined
+): boolean {
+  if (source.SupportsDirectPlay !== true && source.SupportsDirectStream !== true) {
+    return false;
+  }
+
+  // When MediaStreams are missing, trust Jellyfin's DirectPlay/DirectStream flags.
+  if (!videoCodec && !audioCodec) {
+    return true;
+  }
+
+  if (videoCodec && !isBrowserVideoCodec(videoCodec)) {
+    return false;
+  }
+
+  if (audioCodec && !isBrowserAudioCodec(audioCodec)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isBrowserVideoCodec(codec: string | undefined): boolean {
+  return normalizeCodec(codec) !== undefined && browserVideoCodecs.has(normalizeCodec(codec)!);
+}
+
+function isBrowserAudioCodec(codec: string | undefined): boolean {
+  return normalizeCodec(codec) !== undefined && browserAudioCodecs.has(normalizeCodec(codec)!);
+}
+
+function isBrowserContainer(container: string | undefined): boolean {
+  return Boolean(container && browserContainers.has(container.toLowerCase()));
+}
+
+function normalizeCodec(codec: string | undefined): string | undefined {
+  return codec?.trim().toLowerCase().replace(/[^a-z0-9]/g, "") || undefined;
+}
+
+function firstContainer(container: string | null | undefined): string {
+  return container?.split(",")[0]?.trim().toLowerCase() || "mp4";
+}
+
+function isHlsTranscodingUrl(source: MediaSource): boolean {
+  if (!source.TranscodingUrl) {
+    return false;
+  }
+
+  const protocol = source.TranscodingSubProtocol?.toLowerCase();
+  if (protocol === "hls") {
+    return true;
+  }
+
+  return source.TranscodingUrl.includes(".m3u8");
+}
+
+function resolveHlsPath(
+  env: AppEnv,
+  input: PlaybackInfoInput,
+  source: MediaSource,
+  playSessionId?: string
+): string {
+  if (isHlsTranscodingUrl(source) && source.TranscodingUrl) {
+    return sanitizeUpstreamPath(source.TranscodingUrl, playSessionId);
+  }
+
+  return buildHlsPath(env, input, source, playSessionId);
+}
+
+function sanitizeUpstreamPath(transcodingUrl: string, playSessionId?: string): string {
+  const url = new URL(transcodingUrl, "https://jellyfin.local");
+  url.searchParams.delete("ApiKey");
+  url.searchParams.delete("api_key");
+
+  if (playSessionId && !url.searchParams.get("PlaySessionId")) {
+    url.searchParams.set("PlaySessionId", playSessionId);
+  }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+}
 
 function playbackQuality(env: AppEnv, input: PlaybackInfoInput): PlaybackQuality {
+  const maxStreamingBitrate = input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE;
+  const audioBitrate = Math.min(384_000, Math.max(128_000, Math.floor(maxStreamingBitrate * 0.04)));
+  const videoBitrate = Math.max(1_000_000, maxStreamingBitrate - audioBitrate);
+
   return {
-    maxStreamingBitrate: input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE,
+    maxStreamingBitrate,
     maxWidth: env.STREAM_MAX_WIDTH,
-    maxHeight: env.STREAM_MAX_HEIGHT
+    maxHeight: env.STREAM_MAX_HEIGHT,
+    videoBitrate,
+    audioBitrate
   };
 }
 
-function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typeof mediaSourceSchema>): string {
+function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource, playSessionId?: string): string {
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/master.m3u8`, "https://jellyfin.local");
   const params = url.searchParams;
   const quality = playbackQuality(env, input);
@@ -232,9 +357,19 @@ function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typ
   params.set("MediaSourceId", source.Id);
   params.set("VideoCodec", "h264");
   params.set("AudioCodec", "aac");
+  params.set("VideoBitrate", String(quality.videoBitrate));
+  params.set("AudioBitrate", String(quality.audioBitrate));
   params.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
   params.set("MaxWidth", String(quality.maxWidth));
   params.set("MaxHeight", String(quality.maxHeight));
+  params.set("TranscodingMaxAudioChannels", "2");
+  params.set("SegmentContainer", "ts");
+  params.set("BreakOnNonKeyFrames", "true");
+  params.set("RequireAvc", "false");
+
+  if (playSessionId) {
+    params.set("PlaySessionId", playSessionId);
+  }
 
   if (input.audioStreamIndex !== undefined) {
     params.set("AudioStreamIndex", String(input.audioStreamIndex));
@@ -248,24 +383,25 @@ function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typ
   return `${url.pathname}?${params.toString()}`;
 }
 
-function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typeof mediaSourceSchema>): string {
+function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource, playSessionId?: string): string {
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.mp4`, "https://jellyfin.local");
   const params = url.searchParams;
   const quality = playbackQuality(env, input);
-  const streamingBitrate = quality.maxStreamingBitrate;
-  const audioBitrate = Math.min(384_000, Math.max(128_000, Math.floor(streamingBitrate * 0.04)));
-  const videoBitrate = Math.max(1_000_000, streamingBitrate - audioBitrate);
 
   params.set("MediaSourceId", source.Id);
   params.set("VideoCodec", "h264");
   params.set("AudioCodec", "aac");
-  params.set("VideoBitrate", String(videoBitrate));
-  params.set("AudioBitrate", String(audioBitrate));
-  params.set("MaxStreamingBitrate", String(streamingBitrate));
+  params.set("VideoBitrate", String(quality.videoBitrate));
+  params.set("AudioBitrate", String(quality.audioBitrate));
+  params.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
   params.set("MaxWidth", String(quality.maxWidth));
   params.set("MaxHeight", String(quality.maxHeight));
   params.set("TranscodingMaxAudioChannels", "2");
   params.set("RequireAvc", "false");
+
+  if (playSessionId) {
+    params.set("PlaySessionId", playSessionId);
+  }
 
   if (input.audioStreamIndex !== undefined) {
     params.set("AudioStreamIndex", String(input.audioStreamIndex));
@@ -296,11 +432,28 @@ function buildDirectPath(input: PlaybackInfoInput, mediaSourceId: string, contai
   return `/Videos/${encodeURIComponent(input.itemId)}/stream.${encodeURIComponent(container)}?${params.toString()}`;
 }
 
+function buildRemuxStreamPath(input: PlaybackInfoInput, mediaSourceId: string, container: string): string {
+  const params = new URLSearchParams({
+    MediaSourceId: mediaSourceId,
+    Static: "false"
+  });
+
+  if (input.audioStreamIndex !== undefined) {
+    params.set("AudioStreamIndex", String(input.audioStreamIndex));
+  }
+
+  if (isSelectedSubtitleStream(input.subtitleStreamIndex)) {
+    params.set("SubtitleStreamIndex", String(input.subtitleStreamIndex));
+  }
+
+  return `/Videos/${encodeURIComponent(input.itemId)}/stream.${encodeURIComponent(container)}?${params.toString()}`;
+}
+
 function isSelectedSubtitleStream(index: number | undefined): index is number {
   return index !== undefined && index >= 0;
 }
 
-function mapTrack(stream: NonNullable<z.infer<typeof mediaSourceSchema>["MediaStreams"]>[number], type: "Audio" | "Subtitle"): PlaybackTrack {
+function mapTrack(stream: NonNullable<MediaSource["MediaStreams"]>[number], type: "Audio" | "Subtitle"): PlaybackTrack {
   const index = stream.Index ?? 0;
   const codec = stream.Codec?.trim();
   const language = stream.Language?.trim();
@@ -333,14 +486,14 @@ function browserDeviceProfile(quality: PlaybackQuality) {
     DirectPlayProfiles: [
       {
         Type: "Video",
-        Container: "mp4,m4v",
-        VideoCodec: "h264",
-        AudioCodec: "aac,mp3,ac3,eac3"
+        Container: "mp4,m4v,mov",
+        VideoCodec: "h264,vp8,vp9,av1",
+        AudioCodec: "aac,mp3,opus,flac,ac3,eac3"
       },
       {
         Type: "Video",
         Container: "webm",
-        VideoCodec: "vp8,vp9",
+        VideoCodec: "vp8,vp9,av1",
         AudioCodec: "vorbis,opus"
       },
       {
@@ -362,7 +515,8 @@ function browserDeviceProfile(quality: PlaybackQuality) {
         MaxAudioChannels: "2",
         MinSegments: "1",
         SegmentLength: 6,
-        BreakOnNonKeyFrames: true
+        BreakOnNonKeyFrames: true,
+        CopyTimestamps: true
       },
       {
         Type: "Video",
@@ -373,7 +527,37 @@ function browserDeviceProfile(quality: PlaybackQuality) {
         AudioCodec: "aac",
         MaxWidth: String(quality.maxWidth),
         MaxHeight: String(quality.maxHeight),
-        MaxAudioChannels: "2"
+        MaxAudioChannels: "2",
+        EstimateContentLength: false,
+        EnableMpegtsM2TsMode: false,
+        TranscodeSeekInfo: "Auto",
+        CopyTimestamps: true
+      }
+    ],
+    CodecProfiles: [
+      {
+        Type: "Video",
+        Codec: "h264",
+        Conditions: [
+          {
+            Condition: "NotEquals",
+            Property: "IsAnamorphic",
+            Value: "true",
+            IsRequired: false
+          },
+          {
+            Condition: "EqualsAny",
+            Property: "VideoProfile",
+            Value: "high|main|baseline|constrained baseline",
+            IsRequired: false
+          },
+          {
+            Condition: "LessThanEqual",
+            Property: "VideoLevel",
+            Value: "51",
+            IsRequired: false
+          }
+        ]
       }
     ],
     SubtitleProfiles: [

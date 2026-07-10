@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { preparePlayback } from "../api/client.js";
 import type { PlaybackPrepareResponse } from "../api/types.js";
 import { Button } from "../components/Button.js";
-import { attachVideoSource } from "./hls.js";
+import { attachVideoSource, prefersDirectPlayMethod } from "./hls.js";
 import {
   correctionForDrift,
   type RemotePlayerEvent,
@@ -53,7 +53,7 @@ export type PreparedMediaSelection = HostStagedMedia & {
 type PlayerState =
   | { status: "idle" }
   | { status: "preparing" }
-  | { status: "ready"; expiresAt: string; playMethod: "hls" | "direct" }
+  | { status: "ready"; expiresAt: string; playMethod: "hls" | "direct"; streamUrl: string; videoCodec?: string; audioCodec?: string; mediaSourceId: string }
   | { status: "error"; message: string };
 
 type PreflightState =
@@ -64,6 +64,28 @@ type PreflightState =
 
 type PreparedTrackState = PlaybackPrepareResponse["playback"] | undefined;
 type PreferredPlayMethod = "hls" | "direct";
+
+type PlaybackDiagnostics = {
+  preferredPlayMethod: PreferredPlayMethod;
+  lastError?: string | undefined;
+  lastPrepareAt?: string | undefined;
+  playMethod?: "hls" | "direct" | undefined;
+  streamUrl?: string | undefined;
+  expiresAt?: string | undefined;
+  videoCodec?: string | undefined;
+  audioCodec?: string | undefined;
+  mediaSourceId?: string | undefined;
+  userAgent?: string | undefined;
+};
+
+function initialDiagnostics(method: PreferredPlayMethod): PlaybackDiagnostics {
+  return {
+    preferredPlayMethod: method,
+    ...(typeof navigator !== "undefined" ? { userAgent: navigator.userAgent } : {})
+  };
+}
+
+const ticketRenewLeadMs = 60_000;
 
 export function WatchPlayer({
   appToken,
@@ -89,6 +111,7 @@ export function WatchPlayer({
   const preparedKeyRef = useRef<string | undefined>(undefined);
   const activePlayMethodRef = useRef<PreferredPlayMethod | undefined>(undefined);
   const suppressEventsUntilRef = useRef(0);
+  const renewInFlightRef = useRef(false);
   const [playerState, setPlayerState] = useState<PlayerState>({ status: "idle" });
   const [playerNotice, setPlayerNotice] = useState<string | undefined>();
   const [stagedPlayback, setStagedPlayback] = useState<PreparedTrackState>();
@@ -97,16 +120,27 @@ export function WatchPlayer({
   const [stagedSubtitleStreamIndex, setStagedSubtitleStreamIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
-  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>("hls");
+  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>(() => (
+    prefersDirectPlayMethod() ? "direct" : "hls"
+  ));
+  const [diagnostics, setDiagnostics] = useState<PlaybackDiagnostics>(() => (
+    initialDiagnostics(prefersDirectPlayMethod() ? "direct" : "hls")
+  ));
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<string | undefined>();
 
   useEffect(() => {
     cleanupRef.current?.();
     cleanupRef.current = undefined;
     preparedKeyRef.current = undefined;
     activePlayMethodRef.current = undefined;
+    renewInFlightRef.current = false;
+    const initialMethod = prefersDirectPlayMethod() ? "direct" : "hls";
     setPlayerState({ status: "idle" });
     setPlayerNotice(undefined);
-    setPreferredPlayMethod("hls");
+    setPreferredPlayMethod(initialMethod);
+    setDiagnostics(initialDiagnostics(initialMethod));
+    setCopyStatus(undefined);
   }, [itemId]);
 
   useEffect(() => () => cleanupRef.current?.(), []);
@@ -241,8 +275,13 @@ export function WatchPlayer({
     async function prepareSelectedPlayback() {
       setPlayerState({ status: "preparing" });
       setPlayerNotice(preferredPlayMethod === "direct"
-        ? "Using the MP4 compatibility fallback for this client."
+        ? "Using the MP4 compatibility path for this client."
         : undefined);
+      setDiagnostics((current) => ({
+        ...current,
+        preferredPlayMethod,
+        lastPrepareAt: new Date().toISOString()
+      }));
 
       try {
         const response = await preparePlayback(token, {
@@ -266,8 +305,11 @@ export function WatchPlayer({
         cleanupRef.current = attachVideoSource(video, {
           playMethod: response.playback.playMethod,
           streamUrl: response.playback.streamUrl
-        }, (message) => {
-          handlePlaybackSourceError(message);
+        }, {
+          enableWorker: false,
+          onError: (message) => {
+            handlePlaybackSourceError(message);
+          }
         });
         if (previousTime > 0) {
           video.currentTime = previousTime;
@@ -280,18 +322,38 @@ export function WatchPlayer({
         setPlayerState({
           status: "ready",
           expiresAt: response.playback.expiresAt,
-          playMethod: response.playback.playMethod
+          playMethod: response.playback.playMethod,
+          streamUrl: response.playback.streamUrl,
+          mediaSourceId: response.playback.mediaSourceId,
+          ...(response.playback.videoCodec ? { videoCodec: response.playback.videoCodec } : {}),
+          ...(response.playback.audioCodec ? { audioCodec: response.playback.audioCodec } : {})
         });
+        setDiagnostics((current) => ({
+          ...current,
+          preferredPlayMethod,
+          playMethod: response.playback.playMethod,
+          streamUrl: response.playback.streamUrl,
+          expiresAt: response.playback.expiresAt,
+          mediaSourceId: response.playback.mediaSourceId,
+          lastPrepareAt: new Date().toISOString(),
+          ...(response.playback.videoCodec ? { videoCodec: response.playback.videoCodec } : { videoCodec: undefined }),
+          ...(response.playback.audioCodec ? { audioCodec: response.playback.audioCodec } : { audioCodec: undefined })
+        }));
       } catch (error) {
         if (controller.signal.aborted) {
           return;
         }
 
         preparedKeyRef.current = undefined;
+        const message = error instanceof Error ? error.message : "Could not prepare playback.";
         setPlayerState({
           status: "error",
-          message: error instanceof Error ? error.message : "Could not prepare playback."
+          message
         });
+        setDiagnostics((current) => ({
+          ...current,
+          lastError: message
+        }));
       }
     }
 
@@ -357,6 +419,24 @@ export function WatchPlayer({
 
     return () => window.clearInterval(interval);
   }, [isHost, onStateUpdate, playerState.status]);
+
+  useEffect(() => {
+    if (playerState.status !== "ready" || !appToken || !canPrepare || !itemId) {
+      return;
+    }
+
+    const expiresAtMs = Date.parse(playerState.expiresAt);
+    if (!Number.isFinite(expiresAtMs)) {
+      return;
+    }
+
+    const renewAt = expiresAtMs - ticketRenewLeadMs - Date.now();
+    const timeout = window.setTimeout(() => {
+      void renewStreamTicket();
+    }, Math.max(0, renewAt));
+
+    return () => window.clearTimeout(timeout);
+  }, [appToken, audioStreamIndex, canPrepare, itemId, mediaSourceId, playerState, preferredPlayMethod, subtitleStreamIndex]);
 
   const disabledReason = playbackDisabledReason({ appToken, canPrepare, itemId });
   const stagedAudioValue = stagedAudioStreamIndex ?? stagedPlayback?.selectedAudioStreamIndex;
@@ -434,6 +514,22 @@ export function WatchPlayer({
       ) : null}
       {playerNotice ? <p className="muted-line">{playerNotice}</p> : null}
       {playerState.status === "error" ? <p className="inline-error">{playerState.message}</p> : null}
+      <div className="diagnostics-row">
+        <button className="link-button" onClick={() => setShowDiagnostics((value) => !value)} type="button">
+          {showDiagnostics ? "Hide diagnostics" : "Show diagnostics"}
+        </button>
+        {showDiagnostics ? (
+          <button className="link-button" onClick={() => void copyDiagnostics()} type="button">
+            Copy diagnostics
+          </button>
+        ) : null}
+        {copyStatus ? <span className="muted-line">{copyStatus}</span> : null}
+      </div>
+      {showDiagnostics ? (
+        <pre className="diagnostics-panel" aria-label="Playback diagnostics">
+          {JSON.stringify(diagnostics, null, 2)}
+        </pre>
+      ) : null}
     </section>
   );
 
@@ -462,6 +558,11 @@ export function WatchPlayer({
   }
 
   function handlePlaybackSourceError(message: string): void {
+    setDiagnostics((current) => ({
+      ...current,
+      lastError: message
+    }));
+
     if (activePlayMethodRef.current === "hls" && preferredPlayMethod !== "direct") {
       preparedKeyRef.current = undefined;
       cleanupRef.current?.();
@@ -473,6 +574,83 @@ export function WatchPlayer({
     }
 
     setPlayerState({ status: "error", message });
+  }
+
+  async function renewStreamTicket(): Promise<void> {
+    if (!appToken || !itemId || renewInFlightRef.current || playerState.status !== "ready") {
+      return;
+    }
+
+    renewInFlightRef.current = true;
+
+    try {
+      const response = await preparePlayback(appToken, {
+        itemId,
+        ...(mediaSourceId ? { mediaSourceId } : {}),
+        ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
+        ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
+        ...(preferredPlayMethod === "direct" || playerState.playMethod === "direct" ? { preferredPlayMethod: "direct" as const } : {})
+      });
+
+      const video = videoRef.current;
+      if (!video) {
+        return;
+      }
+
+      const previousTime = video.currentTime;
+      const wasPlaying = !video.paused && !video.ended;
+      suppressEventsUntilRef.current = Date.now() + 2000;
+      cleanupRef.current?.();
+      activePlayMethodRef.current = response.playback.playMethod;
+      cleanupRef.current = attachVideoSource(video, {
+        playMethod: response.playback.playMethod,
+        streamUrl: response.playback.streamUrl
+      }, {
+        enableWorker: false,
+        onError: (message) => {
+          handlePlaybackSourceError(message);
+        }
+      });
+      if (previousTime > 0) {
+        video.currentTime = previousTime;
+      }
+      if (wasPlaying) {
+        void video.play().catch(() => {
+          setPlayerNotice("Press play once to resume playback.");
+        });
+      }
+
+      preparedKeyRef.current = `${itemId}:${mediaSourceId ?? ""}:${audioStreamIndex ?? ""}:${subtitleStreamIndex ?? ""}:${preferredPlayMethod}`;
+      setPlayerState({
+        status: "ready",
+        expiresAt: response.playback.expiresAt,
+        playMethod: response.playback.playMethod,
+        streamUrl: response.playback.streamUrl,
+        mediaSourceId: response.playback.mediaSourceId,
+        ...(response.playback.videoCodec ? { videoCodec: response.playback.videoCodec } : {}),
+        ...(response.playback.audioCodec ? { audioCodec: response.playback.audioCodec } : {})
+      });
+      setDiagnostics((current) => ({
+        ...current,
+        playMethod: response.playback.playMethod,
+        streamUrl: response.playback.streamUrl,
+        expiresAt: response.playback.expiresAt,
+        mediaSourceId: response.playback.mediaSourceId,
+        lastPrepareAt: new Date().toISOString(),
+        ...(response.playback.videoCodec ? { videoCodec: response.playback.videoCodec } : { videoCodec: undefined }),
+        ...(response.playback.audioCodec ? { audioCodec: response.playback.audioCodec } : { audioCodec: undefined })
+      }));
+      setPlayerNotice(undefined);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not renew stream ticket.";
+      setDiagnostics((current) => ({
+        ...current,
+        lastError: message
+      }));
+      setPlayerNotice("Stream ticket renewal failed. Playback may stop soon.");
+    } finally {
+      renewInFlightRef.current = false;
+    }
   }
 
   function prepareStagedMedia(): void {
@@ -488,6 +666,17 @@ export function WatchPlayer({
       ...(selectedAudio !== undefined ? { audioStreamIndex: selectedAudio } : {}),
       ...(stagedSubtitleStreamIndex >= 0 ? { subtitleStreamIndex: stagedSubtitleStreamIndex } : {})
     });
+  }
+
+  async function copyDiagnostics(): Promise<void> {
+    const payload = JSON.stringify(diagnostics, null, 2);
+
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopyStatus("Diagnostics copied.");
+    } catch {
+      setCopyStatus("Could not copy diagnostics.");
+    }
   }
 
   function toggleFullscreen(): void {
