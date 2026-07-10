@@ -1,0 +1,30 @@
+{
+  "name": "jellyfin-discord-activity",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Discord Activity for Jellyfin watch parties.",
+  "type": "module",
+  "packageManager": "pnpm@11.3.0",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "db:migrate": "pnpm --filter @app/api db:migrate",
+    "smoke": "pnpm --filter @app/api smoke",
+    "start": "node apps/api/dist/server.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.4",
+    "vitest": "^4.0.14"
+  }
+}

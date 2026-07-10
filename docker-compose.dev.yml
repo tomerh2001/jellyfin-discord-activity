@@ -1,0 +1,33 @@
+services:
+  api:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -lc "corepack enable && pnpm install && pnpm --filter @app/api dev"
+    env_file: .env
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      DEV_AUTH_MOCK: "true"
+    volumes:
+      - .:/app
+      - pnpm_store:/root/.local/share/pnpm/store
+    ports:
+      - "3000:3000"
+
+  activity-web:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -lc "corepack enable && pnpm install && pnpm --filter @app/activity-web dev --host 0.0.0.0"
+    env_file: .env
+    environment:
+      VITE_API_BASE_URL: http://localhost:3000
+      VITE_PUBLIC_DISCORD_CLIENT_ID: dev-client-id
+      VITE_DEV_DISCORD_MOCK: "true"
+    volumes:
+      - .:/app
+      - pnpm_store:/root/.local/share/pnpm/store
+    ports:
+      - "5173:5173"
+
+volumes:
+  pnpm_store:

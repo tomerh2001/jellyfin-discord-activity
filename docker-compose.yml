@@ -1,0 +1,35 @@
+services:
+  app:
+    build: .
+    container_name: jellyfin-discord-activity
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    ports:
+      - "3000:3000"
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: jellyfin-watch-caddy
+    restart: unless-stopped
+    profiles:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  caddy_data:
+  caddy_config:

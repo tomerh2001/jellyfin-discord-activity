@@ -1,0 +1,21 @@
+# Security
+
+- Do not expose Discord client secrets or Jellyfin tokens in the browser bundle.
+- Use HTTPS/WSS in production.
+- Generate all session and token encryption secrets with at least 32 bytes of entropy.
+- Prefer `JELLYFIN_AUTH_MODE=per-user` when you want Jellyfin permissions enforced separately for each Discord user.
+- Use `JELLYFIN_AUTH_MODE=shared` only for trusted/private deployments where every authenticated Discord user should receive the same Jellyfin access.
+- In shared mode, create a dedicated Jellyfin user such as `discord-watch`, do not make it an administrator, and grant it access only to libraries intended for Discord viewing.
+- Do not use your personal Jellyfin admin account as the shared account. Every Discord user who can authenticate to the Activity can browse and prepare media visible to the shared Jellyfin user.
+- Set `TOKEN_ENCRYPTION_KEY` to a base64-encoded 32-byte key before linking Jellyfin accounts in production.
+- Per-user Jellyfin passwords are not stored. Shared-mode `JELLYFIN_SHARED_PASSWORD` is read from the backend environment and should be protected like any other server secret.
+- Jellyfin access tokens are encrypted before being written under `/data`.
+- Stream tickets are short-lived bearer URLs for `/media/...`; keep `STREAM_TICKET_TTL_SECONDS` low and use HTTPS so tickets are not exposed on the network.
+- WebSocket sync uses the short-lived app session JWT in the `/ws` query string. Use `wss://` in production and avoid logging query strings at the reverse proxy.
+- The backend enforces host-only shared playback commands; participant player events must not mutate room playback state.
+- The backend applies an app-wide rate limit. Tune `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW` for your deployment and set `TRUST_PROXY=true` only when the app is behind a trusted reverse proxy.
+- Fastify request logs are structured JSON and redact authorization headers, cookies, common token fields, passwords, Discord OAuth codes, `/ws?token=...`, and other sensitive query parameters before writing URLs.
+- Stream tickets are also invalidated when the app session that created them has expired, even if `STREAM_TICKET_TTL_SECONDS` has not elapsed.
+- Invalid WebSocket payloads return an `invalid_json` or validation error message instead of crashing the room process.
+- Rooms without active WebSocket participants are removed after `ROOM_IDLE_TTL_SECONDS`; active rooms are skipped during idle cleanup.
+- `DEV_AUTH_MOCK=true` bypasses live Discord OAuth for local development and smoke tests. It must be `false` for public deployments, and the backend only accepts mock users when that flag is enabled.
