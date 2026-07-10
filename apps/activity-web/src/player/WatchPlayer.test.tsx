@@ -30,7 +30,9 @@ vi.mock("./hls.js", () => ({
     ok: true,
     status: 206,
     contentType: "application/vnd.apple.mpegurl"
-  }))
+  })),
+  waitForProgressiveBuffer: vi.fn(async () => ({ ready: true, bufferedSeconds: 8 })),
+  progressiveMinBufferSeconds: 6
 }));
 
 describe("WatchPlayer", () => {
@@ -109,7 +111,9 @@ describe("WatchPlayer", () => {
         onError: expect.any(Function)
       }));
     });
-    expect(screen.getByText("Trying forced H.264/AAC progressive MP4.")).toBeInTheDocument();
+    expect(
+      screen.getByText(/forced H\.264\/AAC progressive MP4|Buffering progressive stream/i)
+    ).toBeInTheDocument();
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {

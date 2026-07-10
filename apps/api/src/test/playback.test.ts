@@ -71,7 +71,8 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("AudioBitrate")).toBe("384000");
         expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
         expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
-        expect(parsed.searchParams.get("SegmentContainer")).toBe("ts");
+        expect(parsed.searchParams.get("SegmentContainer")).toBe("mp4");
+        expect(parsed.searchParams.get("Profile")).toBe("baseline");
         expect(parsed.searchParams.has("SubtitleStreamIndex")).toBe(false);
         expect(parsed.searchParams.has("SubtitleMethod")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
@@ -246,7 +247,7 @@ describe("playback routes", () => {
     await app.close();
   });
 
-  it("prepares a forced VP9/Opus WebM stream when preferredPlayMethod is webm", async () => {
+  it("prepares a forced realtime VP8/Opus WebM stream when preferredPlayMethod is webm", async () => {
     const app = await buildPlaybackApp();
 
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -273,8 +274,9 @@ describe("playback routes", () => {
         const parsed = new URL(url);
         const headers = new Headers(init?.headers);
 
-        expect(parsed.searchParams.get("VideoCodec")).toBe("vp9");
+        expect(parsed.searchParams.get("VideoCodec")).toBe("vp8");
         expect(parsed.searchParams.get("AudioCodec")).toBe("opus");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("2500000");
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
 
         return textResponse("webm", 200, "video/webm");
@@ -300,7 +302,7 @@ describe("playback routes", () => {
     expect(prepared.json().playback).toMatchObject({
       playMethod: "direct",
       container: "webm",
-      videoCodec: "vp9",
+      videoCodec: "vp8",
       audioCodec: "opus"
     });
     expect(prepared.json().playback.streamUrl).toMatch(/^\/media\/direct\/.+\/stream\.webm$/);
@@ -650,8 +652,8 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("AudioBitrate")).toBe("192000");
         expect(parsed.searchParams.get("TranscodingMaxAudioChannels")).toBe("2");
         expect(parsed.searchParams.get("RequireAvc")).toBe("true");
-        expect(parsed.searchParams.get("Profile")).toBe("high");
-        expect(parsed.searchParams.get("Level")).toBe("41");
+        expect(parsed.searchParams.get("Profile")).toBe("baseline");
+        expect(parsed.searchParams.get("Level")).toBe("40");
         expect(parsed.searchParams.get("AudioStreamIndex")).toBe("2");
         expect(parsed.searchParams.get("SubtitleStreamIndex")).toBe("4");
         expect(parsed.searchParams.get("SubtitleMethod")).toBe("Encode");

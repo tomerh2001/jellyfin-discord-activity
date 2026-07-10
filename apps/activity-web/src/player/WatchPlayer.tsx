@@ -7,8 +7,10 @@ import {
   attachVideoSource,
   clientPlaybackLadder,
   prefersForcedWebm,
+  progressiveMinBufferSeconds,
   probeClientMediaCapabilities,
   probeStreamUrl,
+  waitForProgressiveBuffer,
   type ClientMediaCapabilities
 } from "./hls.js";
 import {
@@ -134,8 +136,8 @@ function nextFallbackMethod(current: PreferredPlayMethod, ladder: PreferredPlayM
 function methodNotice(method: PreferredPlayMethod, linuxClient: boolean): string | undefined {
   if (method === "webm") {
     return linuxClient
-      ? "Linux Discord: using VP9/Opus WebM (H.264 is rejected by this client)."
-      : "Trying VP9/Opus WebM compatibility stream.";
+      ? "Linux Discord: realtime VP8/Opus WebM (prebuffering for smoother playback)."
+      : "Trying VP8/Opus WebM compatibility stream.";
   }
 
   if (method === "direct") {
@@ -143,7 +145,7 @@ function methodNotice(method: PreferredPlayMethod, linuxClient: boolean): string
   }
 
   if (linuxClient) {
-    return "Trying segmented HLS on Linux Discord.";
+    return "Linux Discord: trying fMP4 HLS (baseline H.264) for smooth multi-viewer streaming.";
   }
 
   return undefined;
@@ -448,7 +450,28 @@ export function WatchPlayer({
         if (previousTime > 0) {
           video.currentTime = previousTime;
         }
-        if (wasPlaying) {
+
+        // Progressive live-transcodes underrun unless we wait for a forward buffer first.
+        if (response.playback.playMethod === "direct") {
+          setPlayerNotice("Buffering progressive stream before play…");
+          const bufferWait = await waitForProgressiveBuffer(video, progressiveMinBufferSeconds);
+          if (controller.signal.aborted) {
+            return;
+          }
+
+          pushAttempt({
+            stage: "info",
+            preferredPlayMethod,
+            playMethod: response.playback.playMethod,
+            streamUrl: response.playback.streamUrl,
+            message: bufferWait.ready
+              ? `Progressive buffer ready (${bufferWait.bufferedSeconds.toFixed(1)}s ahead).`
+              : `Progressive buffer partial (${bufferWait.bufferedSeconds.toFixed(1)}s ahead); starting anyway.`
+          });
+          setPlayerNotice(undefined);
+        }
+
+        if (wasPlaying || response.playback.playMethod === "direct") {
           void video.play().catch(() => {
             setPlayerNotice("Press play once to resume playback.");
           });

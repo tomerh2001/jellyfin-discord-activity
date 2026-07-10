@@ -43,19 +43,19 @@ export function isLinuxDiscordClient(): boolean {
 }
 
 /**
- * Linux Discord (Electron) rejects H.264 HLS/MP4 in practice with MEDIA_ERR_SRC_NOT_SUPPORTED
- * even when canPlayType reports "probably". VP9/Opus WebM is the reliable path there.
+ * Linux Discord often fails MPEG-TS H.264 and progressive H.264, and progressive WebM
+ * underruns under load. Prefer fMP4 HLS first (baseline H.264), then realtime WebM (VP8).
  */
 export function prefersForcedWebm(): boolean {
   return isLinuxDiscordClient();
 }
 
-/** @deprecated Prefer prefersForcedWebm for Linux Discord. */
+/** @deprecated Prefer clientPlaybackLadder. */
 export function prefersForcedHls(): boolean {
-  return false;
+  return isLinuxDiscordClient();
 }
 
-/** @deprecated Use prefersForcedWebm — Linux should not start on static remux. */
+/** @deprecated Use clientPlaybackLadder. */
 export function prefersDirectPlayMethod(): boolean {
   return false;
 }
@@ -63,12 +63,17 @@ export function prefersDirectPlayMethod(): boolean {
 /** Preferred playback ladder for this client (first entry is the initial attempt). */
 export function clientPlaybackLadder(): Array<"hls" | "direct" | "webm"> {
   if (isLinuxDiscordClient()) {
-    // Empirically: hls (h264) and progressive mp4 fail; webm (vp9/opus) works.
-    return ["webm", "hls", "direct"];
+    // 1) fMP4 HLS (baseline H.264) — smooth segments if the client accepts H.264 in fMP4
+    // 2) realtime progressive WebM (VP8) — works when H.264 is rejected, tuned for encode speed
+    // 3) progressive MP4 last resort
+    return ["hls", "webm", "direct"];
   }
 
   return ["hls", "direct", "webm"];
 }
+
+/** Minimum forward buffer (seconds) before autoplay of progressive streams. */
+export const progressiveMinBufferSeconds = 6;
 
 export function probeClientMediaCapabilities(video?: HTMLVideoElement | null): ClientMediaCapabilities {
   const probe = video ?? (typeof document !== "undefined" ? document.createElement("video") : null);
@@ -227,9 +232,72 @@ export function attachVideoSource(
   video.setAttribute("preload", "auto");
   const isWebm = source.streamUrl.includes(".webm");
   video.setAttribute("type", isWebm ? "video/webm" : "video/mp4");
-  onInfo?.(isWebm ? "Attaching progressive WebM source." : "Attaching progressive MP4 source.");
+  onInfo?.(isWebm
+    ? "Attaching progressive WebM source (live-transcode; waiting for buffer before play)."
+    : "Attaching progressive MP4 source.");
   video.src = source.streamUrl;
   return () => clearVideo(video);
+}
+
+export function bufferedAheadSeconds(video: HTMLVideoElement): number {
+  if (!video.buffered.length) {
+    return 0;
+  }
+
+  try {
+    const end = video.buffered.end(video.buffered.length - 1);
+    return Math.max(0, end - video.currentTime);
+  } catch {
+    return 0;
+  }
+}
+
+/** Wait until progressive media has enough forward buffer, or timeout. */
+export async function waitForProgressiveBuffer(
+  video: HTMLVideoElement,
+  minSeconds: number,
+  timeoutMs = 20_000
+): Promise<{ ready: boolean; bufferedSeconds: number }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let poll = 0;
+    let timeout = 0;
+
+    const finish = (ready: boolean) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      video.removeEventListener("progress", onProgress);
+      video.removeEventListener("canplay", onProgress);
+      video.removeEventListener("loadeddata", onProgress);
+      if (poll) {
+        window.clearInterval(poll);
+      }
+      if (timeout) {
+        window.clearTimeout(timeout);
+      }
+      resolve({ ready, bufferedSeconds: bufferedAheadSeconds(video) });
+    };
+
+    const onProgress = () => {
+      if (bufferedAheadSeconds(video) >= minSeconds) {
+        finish(true);
+      }
+    };
+
+    onProgress();
+    video.addEventListener("progress", onProgress);
+    video.addEventListener("canplay", onProgress);
+    video.addEventListener("loadeddata", onProgress);
+
+    // Some Electron builds under-report progress events.
+    poll = window.setInterval(onProgress, 250);
+    timeout = window.setTimeout(() => {
+      finish(bufferedAheadSeconds(video) >= minSeconds * 0.5);
+    }, timeoutMs);
+  });
 }
 
 function clearVideo(video: HTMLVideoElement): void {

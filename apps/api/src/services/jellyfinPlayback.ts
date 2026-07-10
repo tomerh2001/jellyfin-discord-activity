@@ -185,7 +185,7 @@ function selectPlaybackMethod(
         playMethod: "direct",
         upstreamPath: buildTranscodeWebmPath(env, input, source, playSessionId),
         container: "webm",
-        videoCodec: "vp9",
+        videoCodec: "vp8",
         audioCodec: "opus",
         ...tracks
       };
@@ -365,7 +365,8 @@ function resolveHlsPath(
   playSessionId?: string
 ): string {
   if (isHlsTranscodingUrl(source) && source.TranscodingUrl) {
-    return sanitizeUpstreamPath(source.TranscodingUrl, playSessionId);
+    // Keep Jellyfin session params, but force MSE-friendly fMP4 + baseline H.264.
+    return applyHlsCompatParams(sanitizeUpstreamPath(source.TranscodingUrl, playSessionId), env, input);
   }
 
   return buildHlsPath(env, input, source, playSessionId);
@@ -379,6 +380,28 @@ function sanitizeUpstreamPath(transcodingUrl: string, playSessionId?: string): s
   if (playSessionId && !url.searchParams.get("PlaySessionId")) {
     url.searchParams.set("PlaySessionId", playSessionId);
   }
+
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function applyHlsCompatParams(upstreamPath: string, env: AppEnv, input: PlaybackInfoInput): string {
+  const url = new URL(upstreamPath, "https://jellyfin.local");
+  const quality = playbackQuality(env, input);
+
+  url.searchParams.set("VideoCodec", "h264");
+  url.searchParams.set("AudioCodec", "aac");
+  url.searchParams.set("SegmentContainer", "mp4");
+  url.searchParams.set("RequireAvc", "true");
+  url.searchParams.set("Profile", "baseline");
+  url.searchParams.set("Level", "40");
+  url.searchParams.set("SegmentLength", "3");
+  url.searchParams.set("MinSegments", "1");
+  url.searchParams.set("BreakOnNonKeyFrames", "true");
+  url.searchParams.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
+  url.searchParams.set("MaxWidth", String(quality.maxWidth));
+  url.searchParams.set("MaxHeight", String(quality.maxHeight));
+  url.searchParams.set("VideoBitrate", String(quality.videoBitrate));
+  url.searchParams.set("AudioBitrate", String(quality.audioBitrate));
 
   return `${url.pathname}${url.search}${url.hash}`;
 }
@@ -411,9 +434,14 @@ function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource
   params.set("MaxWidth", String(quality.maxWidth));
   params.set("MaxHeight", String(quality.maxHeight));
   params.set("TranscodingMaxAudioChannels", "2");
-  params.set("SegmentContainer", "ts");
+  // fMP4 is more reliable in Chromium/Electron MSE than MPEG-TS (Linux Discord especially).
+  params.set("SegmentContainer", "mp4");
   params.set("BreakOnNonKeyFrames", "true");
-  params.set("RequireAvc", "false");
+  params.set("RequireAvc", "true");
+  params.set("Profile", "baseline");
+  params.set("Level", "40");
+  params.set("SegmentLength", "3");
+  params.set("MinSegments", "1");
 
   if (playSessionId) {
     params.set("PlaySessionId", playSessionId);
@@ -452,8 +480,9 @@ function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: M
   params.set("TranscodingMaxAudioChannels", "2");
   params.set("MaxAudioChannels", "2");
   params.set("RequireAvc", "true");
-  params.set("Profile", "high");
-  params.set("Level", "41");
+  // Baseline is more widely accepted in embedded Chromium than High.
+  params.set("Profile", "baseline");
+  params.set("Level", "40");
   params.set("CopyTimestamps", "true");
   params.set("EnableMpegtsM2TsMode", "false");
 
@@ -476,22 +505,26 @@ function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: M
 function buildTranscodeWebmPath(env: AppEnv, input: PlaybackInfoInput, source: MediaSource, playSessionId?: string): string {
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.webm`, "https://jellyfin.local");
   const params = url.searchParams;
-  const quality = playbackQuality(env, input);
-  const streamingBitrate = Math.min(quality.maxStreamingBitrate, 8_000_000);
-  const audioBitrate = Math.min(160_000, Math.max(96_000, Math.floor(streamingBitrate * 0.04)));
-  const videoBitrate = Math.max(800_000, streamingBitrate - audioBitrate);
+  // Progressive WebM is live-transcoded without ranges. VP9 often cannot sustain realtime
+  // software encode, which produces 2–5s underruns. Prefer faster VP8 at a modest bitrate
+  // so the encoder can stay ahead of the player (critical for multi-viewer watch parties).
+  const streamingBitrate = Math.min(qualityCap(env, input, 2_500_000), 2_500_000);
+  const audioBitrate = 96_000;
+  const videoBitrate = Math.max(600_000, streamingBitrate - audioBitrate);
 
   params.set("MediaSourceId", source.Id);
-  params.set("VideoCodec", "vp9");
+  params.set("VideoCodec", "vp8");
   params.set("AudioCodec", "opus");
   params.set("VideoBitrate", String(videoBitrate));
   params.set("AudioBitrate", String(audioBitrate));
   params.set("MaxStreamingBitrate", String(streamingBitrate));
-  params.set("MaxWidth", String(Math.min(quality.maxWidth, 1280)));
-  params.set("MaxHeight", String(Math.min(quality.maxHeight, 720)));
+  params.set("MaxWidth", String(Math.min(env.STREAM_MAX_WIDTH, 1280)));
+  params.set("MaxHeight", String(Math.min(env.STREAM_MAX_HEIGHT, 720)));
   params.set("TranscodingMaxAudioChannels", "2");
   params.set("MaxAudioChannels", "2");
   params.set("CopyTimestamps", "true");
+  // Smaller clusters reduce multi-second stalls between WebM cluster flushes.
+  params.set("SegmentLength", "1");
 
   if (playSessionId) {
     params.set("PlaySessionId", playSessionId);
@@ -507,6 +540,10 @@ function buildTranscodeWebmPath(env: AppEnv, input: PlaybackInfoInput, source: M
   }
 
   return `${url.pathname}?${params.toString()}`;
+}
+
+function qualityCap(env: AppEnv, input: PlaybackInfoInput, cap: number): number {
+  return Math.min(input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE, cap);
 }
 
 function buildDirectPath(input: PlaybackInfoInput, mediaSourceId: string, container: string): string {
@@ -601,16 +638,17 @@ function browserDeviceProfile(quality: PlaybackQuality) {
         Type: "Video",
         Context: "Streaming",
         Protocol: "hls",
-        Container: "ts",
+        Container: "mp4",
         VideoCodec: "h264",
         AudioCodec: "aac",
         MaxWidth: String(quality.maxWidth),
         MaxHeight: String(quality.maxHeight),
         MaxAudioChannels: "2",
         MinSegments: "1",
-        SegmentLength: 6,
+        SegmentLength: 3,
         BreakOnNonKeyFrames: true,
-        CopyTimestamps: true
+        CopyTimestamps: true,
+        ManifestSubtitles: "vtt"
       },
       {
         Type: "Video",
