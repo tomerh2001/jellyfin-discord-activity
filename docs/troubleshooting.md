@@ -133,7 +133,9 @@ If playback never prepares:
 - Confirm the app container can reach `JELLYFIN_DEFAULT_SERVER_URL`.
 - Confirm `STREAM_MAX_BITRATE` is not higher than your Jellyfin server can handle.
 
-If playback works but looks much softer than Jellyfin direct playback, increase `STREAM_MAX_BITRATE` in `.env` and recreate the container. The app uses an H.264/AAC HLS stream for Discord compatibility, so very high bitrate source files will usually be transcoded. The default `20000000` is intended to preserve good 1080p quality while remaining practical for several viewers. For high-motion 1080p or 4K sources, try `30000000` or `40000000` if your Jellyfin server CPU/GPU and upload bandwidth can handle one stream per Activity participant.
+If playback works but looks much softer than Jellyfin direct playback, check both bitrate and resolution. The app uses an H.264/AAC HLS stream for Discord compatibility, so very high bitrate source files will usually be transcoded. The defaults `STREAM_MAX_BITRATE=20000000`, `STREAM_MAX_WIDTH=1920`, and `STREAM_MAX_HEIGHT=1080` are intended to preserve good 1080p quality while remaining practical for several viewers. For high-motion 1080p or 4K sources, try `STREAM_MAX_BITRATE=30000000` or `40000000`; for 4K testing, also raise `STREAM_MAX_WIDTH` and `STREAM_MAX_HEIGHT` if your Jellyfin server CPU/GPU and upload bandwidth can handle one stream per Activity participant.
+
+If the Linux Discord client rejects HLS while Chrome or Windows Discord works, the frontend should automatically retry that client with the MP4 compatibility fallback. Other participants remain on HLS. During fallback you may see the player status change to `direct`; that direct path is still proxied through the app and still forces H.264/AAC for Discord compatibility.
 
 ## Jellyfin Auth Mode Problems
 

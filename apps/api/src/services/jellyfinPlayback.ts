@@ -36,6 +36,7 @@ export type PlaybackInfoInput = {
   audioStreamIndex?: number | undefined;
   subtitleStreamIndex?: number | undefined;
   maxStreamingBitrate?: number | undefined;
+  preferredPlayMethod?: "hls" | "direct" | undefined;
 };
 
 export type PreparedPlayback = {
@@ -67,9 +68,12 @@ export type PlaybackTrack = {
 export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, input: PlaybackInfoInput): Promise<PreparedPlayback> {
   const token = decryptString(env, account.encryptedAccessToken);
   const url = new URL(`${account.serverUrl}/Items/${encodeURIComponent(input.itemId)}/PlaybackInfo`);
+  const quality = playbackQuality(env, input);
 
   url.searchParams.set("UserId", account.jellyfinUserId);
-  url.searchParams.set("MaxStreamingBitrate", String(input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE));
+  url.searchParams.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
+  url.searchParams.set("MaxWidth", String(quality.maxWidth));
+  url.searchParams.set("MaxHeight", String(quality.maxHeight));
   url.searchParams.set("EnableDirectPlay", "true");
   url.searchParams.set("EnableDirectStream", "true");
   url.searchParams.set("EnableTranscoding", "true");
@@ -94,7 +98,7 @@ export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, inp
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      DeviceProfile: browserDeviceProfile(input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE)
+      DeviceProfile: browserDeviceProfile(quality)
     })
   });
 
@@ -143,12 +147,44 @@ function selectPlaybackMethod(
     subtitleTracks
   };
 
+  if (input.preferredPlayMethod === "direct") {
+    if (source.SupportsTranscoding !== false) {
+      return {
+        itemId: input.itemId,
+        mediaSourceId: source.Id,
+        playMethod: "direct",
+        upstreamPath: buildTranscodeHttpPath(env, input, source),
+        container: "mp4",
+        videoCodec: "h264",
+        audioCodec: "aac",
+        ...tracks
+      };
+    }
+
+    if (source.SupportsDirectPlay === false && source.SupportsDirectStream === false) {
+      throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
+    }
+
+    const container = source.Container?.split(",")[0]?.trim() || "mp4";
+
+    return {
+      itemId: input.itemId,
+      mediaSourceId: source.Id,
+      playMethod: "direct",
+      upstreamPath: buildDirectPath(input, source.Id, container),
+      container,
+      ...(videoCodec ? { videoCodec } : {}),
+      ...(audioCodec ? { audioCodec } : {}),
+      ...tracks
+    };
+  }
+
   if (env.STREAM_PROXY_MODE !== "direct" && source.SupportsTranscoding !== false) {
     return {
       itemId: input.itemId,
       mediaSourceId: source.Id,
       playMethod: "hls",
-      upstreamPath: buildHlsPath(input, source, env.STREAM_MAX_BITRATE),
+      upstreamPath: buildHlsPath(env, input, source),
       ...(source.TranscodingContainer ? { container: source.TranscodingContainer } : {}),
       ...(videoCodec ? { videoCodec } : {}),
       ...(audioCodec ? { audioCodec } : {}),
@@ -174,14 +210,62 @@ function selectPlaybackMethod(
   };
 }
 
-function buildHlsPath(input: PlaybackInfoInput, source: z.infer<typeof mediaSourceSchema>, maxBitrate: number): string {
+type PlaybackQuality = {
+  maxStreamingBitrate: number;
+  maxWidth: number;
+  maxHeight: number;
+};
+
+function playbackQuality(env: AppEnv, input: PlaybackInfoInput): PlaybackQuality {
+  return {
+    maxStreamingBitrate: input.maxStreamingBitrate ?? env.STREAM_MAX_BITRATE,
+    maxWidth: env.STREAM_MAX_WIDTH,
+    maxHeight: env.STREAM_MAX_HEIGHT
+  };
+}
+
+function buildHlsPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typeof mediaSourceSchema>): string {
   const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/master.m3u8`, "https://jellyfin.local");
   const params = url.searchParams;
+  const quality = playbackQuality(env, input);
 
   params.set("MediaSourceId", source.Id);
   params.set("VideoCodec", "h264");
   params.set("AudioCodec", "aac");
-  params.set("MaxStreamingBitrate", String(input.maxStreamingBitrate ?? maxBitrate));
+  params.set("MaxStreamingBitrate", String(quality.maxStreamingBitrate));
+  params.set("MaxWidth", String(quality.maxWidth));
+  params.set("MaxHeight", String(quality.maxHeight));
+
+  if (input.audioStreamIndex !== undefined) {
+    params.set("AudioStreamIndex", String(input.audioStreamIndex));
+  }
+
+  if (isSelectedSubtitleStream(input.subtitleStreamIndex)) {
+    params.set("SubtitleStreamIndex", String(input.subtitleStreamIndex));
+    params.set("SubtitleMethod", "Encode");
+  }
+
+  return `${url.pathname}?${params.toString()}`;
+}
+
+function buildTranscodeHttpPath(env: AppEnv, input: PlaybackInfoInput, source: z.infer<typeof mediaSourceSchema>): string {
+  const url = new URL(`/Videos/${encodeURIComponent(input.itemId)}/stream.mp4`, "https://jellyfin.local");
+  const params = url.searchParams;
+  const quality = playbackQuality(env, input);
+  const streamingBitrate = quality.maxStreamingBitrate;
+  const audioBitrate = Math.min(384_000, Math.max(128_000, Math.floor(streamingBitrate * 0.04)));
+  const videoBitrate = Math.max(1_000_000, streamingBitrate - audioBitrate);
+
+  params.set("MediaSourceId", source.Id);
+  params.set("VideoCodec", "h264");
+  params.set("AudioCodec", "aac");
+  params.set("VideoBitrate", String(videoBitrate));
+  params.set("AudioBitrate", String(audioBitrate));
+  params.set("MaxStreamingBitrate", String(streamingBitrate));
+  params.set("MaxWidth", String(quality.maxWidth));
+  params.set("MaxHeight", String(quality.maxHeight));
+  params.set("TranscodingMaxAudioChannels", "2");
+  params.set("RequireAvc", "false");
 
   if (input.audioStreamIndex !== undefined) {
     params.set("AudioStreamIndex", String(input.audioStreamIndex));
@@ -241,11 +325,11 @@ function mapTrack(stream: NonNullable<z.infer<typeof mediaSourceSchema>["MediaSt
   };
 }
 
-function browserDeviceProfile(maxStreamingBitrate: number) {
+function browserDeviceProfile(quality: PlaybackQuality) {
   return {
-    MaxStreamingBitrate: maxStreamingBitrate,
-    MaxStaticBitrate: maxStreamingBitrate,
-    MusicStreamingTranscodingBitrate: Math.min(maxStreamingBitrate, 1_500_000),
+    MaxStreamingBitrate: quality.maxStreamingBitrate,
+    MaxStaticBitrate: quality.maxStreamingBitrate,
+    MusicStreamingTranscodingBitrate: Math.min(quality.maxStreamingBitrate, 1_500_000),
     DirectPlayProfiles: [
       {
         Type: "Video",
@@ -273,6 +357,8 @@ function browserDeviceProfile(maxStreamingBitrate: number) {
         Container: "ts",
         VideoCodec: "h264",
         AudioCodec: "aac",
+        MaxWidth: String(quality.maxWidth),
+        MaxHeight: String(quality.maxHeight),
         MaxAudioChannels: "2",
         MinSegments: "1",
         SegmentLength: 6,
@@ -285,6 +371,8 @@ function browserDeviceProfile(maxStreamingBitrate: number) {
         Container: "mp4",
         VideoCodec: "h264",
         AudioCodec: "aac",
+        MaxWidth: String(quality.maxWidth),
+        MaxHeight: String(quality.maxHeight),
         MaxAudioChannels: "2"
       }
     ],

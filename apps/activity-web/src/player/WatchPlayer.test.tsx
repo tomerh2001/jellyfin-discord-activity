@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { preparePlayback } from "../api/client.js";
+import type { PlaybackPrepareResponse } from "../api/types.js";
 import { attachVideoSource } from "./hls.js";
 import { WatchPlayer, type WatchPlayerPropsForTest } from "./WatchPlayer.js";
 
@@ -42,6 +43,46 @@ describe("WatchPlayer", () => {
       playMethod: "hls",
       streamUrl: "/media/hls/ticket/master.m3u8"
     }, expect.any(Function));
+  });
+
+  it("falls back to a direct MP4 prepare when HLS fails in the client", async () => {
+    const preparePlaybackMock = vi.mocked(preparePlayback);
+    const attachVideoSourceMock = vi.mocked(attachVideoSource);
+    preparePlaybackMock
+      .mockResolvedValueOnce(playbackResponse())
+      .mockResolvedValueOnce(playbackResponse({
+        playMethod: "direct",
+        streamUrl: "/media/direct/ticket/stream.mp4"
+      }));
+    attachVideoSourceMock
+      .mockImplementationOnce((_video, _source, onError) => {
+        window.setTimeout(() => onError?.("HLS playback failed: bufferAppendError."), 0);
+        return vi.fn();
+      })
+      .mockImplementationOnce(() => vi.fn());
+
+    renderWatchPlayer({
+      itemId: "movie-1",
+      mediaSourceId: "media-1",
+      audioStreamIndex: 2,
+      subtitleStreamIndex: 3,
+      title: "Example Movie"
+    });
+
+    await waitFor(() => {
+      expect(preparePlaybackMock).toHaveBeenCalledWith("app-token", {
+        itemId: "movie-1",
+        mediaSourceId: "media-1",
+        audioStreamIndex: 2,
+        subtitleStreamIndex: 3,
+        preferredPlayMethod: "direct"
+      });
+    });
+    expect(attachVideoSourceMock).toHaveBeenLastCalledWith(expect.any(HTMLVideoElement), {
+      playMethod: "direct",
+      streamUrl: "/media/direct/ticket/stream.mp4"
+    }, expect.any(Function));
+    expect(screen.getByText("Using the MP4 compatibility fallback for this client.")).toBeInTheDocument();
   });
 
   it("lets the host choose tracks before publishing staged media", async () => {
@@ -117,7 +158,7 @@ function renderWatchPlayer(props: Partial<WatchPlayerPropsForTest> = {}) {
   );
 }
 
-function playbackResponse() {
+function playbackResponse(overrides: Partial<PlaybackPrepareResponse["playback"]> = {}) {
   return {
     playback: {
       itemId: "movie-1",
@@ -140,7 +181,8 @@ function playbackResponse() {
         index: 3,
         type: "Subtitle" as const,
         label: "English"
-      }]
+      }],
+      ...overrides
     }
   };
 }

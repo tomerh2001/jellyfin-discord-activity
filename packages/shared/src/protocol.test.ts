@@ -114,10 +114,12 @@ describe("shared schemas", () => {
   it("validates playback prepare contracts", () => {
     const request = playbackPrepareRequestSchema.parse({
       itemId: "movie-1",
-      maxStreamingBitrate: 8_000_000
+      maxStreamingBitrate: 20_000_000,
+      preferredPlayMethod: "direct"
     });
 
     expect(request.itemId).toBe("movie-1");
+    expect(request.preferredPlayMethod).toBe("direct");
 
     const response = playbackPrepareResponseSchema.parse({
       playback: {

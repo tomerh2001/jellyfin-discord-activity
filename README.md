@@ -101,6 +101,8 @@ The app container does not need Jellyfin to be public if the container can reach
    JELLYFIN_AUTH_MODE=per-user
    STREAM_PROXY_MODE=hls-first
    STREAM_MAX_BITRATE=20000000
+   STREAM_MAX_WIDTH=1920
+   STREAM_MAX_HEIGHT=1080
    ```
 
    In per-user mode, every Discord user links their own Jellyfin account in the Activity. Jellyfin permissions are evaluated per viewer.
@@ -115,6 +117,8 @@ The app container does not need Jellyfin to be public if the container can reach
    JELLYFIN_SHARED_PASSWORD=replace_with_that_users_password
    STREAM_PROXY_MODE=hls-first
    STREAM_MAX_BITRATE=20000000
+   STREAM_MAX_WIDTH=1920
+   STREAM_MAX_HEIGHT=1080
    ```
 
    For shared mode, create a dedicated Jellyfin user such as `discord-watch` and grant it access only to libraries intended for Discord viewing. Do not use a Jellyfin admin account.
@@ -199,6 +203,8 @@ Playback and room tuning:
 ```bash
 STREAM_TICKET_TTL_SECONDS=300
 STREAM_MAX_BITRATE=20000000
+STREAM_MAX_WIDTH=1920
+STREAM_MAX_HEIGHT=1080
 STREAM_PROXY_MODE=hls-first
 ROOM_MAX_PARTICIPANTS=20
 ROOM_IDLE_TTL_SECONDS=900

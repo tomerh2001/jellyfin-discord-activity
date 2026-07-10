@@ -147,7 +147,8 @@ export const playbackPrepareRequestSchema = z.object({
   mediaSourceId: z.string().min(1).optional(),
   audioStreamIndex: z.number().int().optional(),
   subtitleStreamIndex: z.number().int().optional(),
-  maxStreamingBitrate: z.number().int().positive().optional()
+  maxStreamingBitrate: z.number().int().positive().optional(),
+  preferredPlayMethod: z.enum(["hls", "direct"]).optional()
 });
 
 export const playbackTrackSchema = z.object({

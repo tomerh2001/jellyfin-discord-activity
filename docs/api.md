@@ -447,9 +447,14 @@ Body:
   "mediaSourceId": "optional_media_source_id",
   "audioStreamIndex": 1,
   "subtitleStreamIndex": 2,
-  "maxStreamingBitrate": 20000000
+  "maxStreamingBitrate": 20000000,
+  "preferredPlayMethod": "hls"
 }
 ```
+
+`preferredPlayMethod` is optional and accepts `hls` or `direct`. Omit it for normal HLS-first playback. The frontend uses `direct` only as a per-client compatibility fallback after HLS fails; that returns a local `/media/direct/.../stream.mp4` URL backed by a Jellyfin H.264/AAC MP4 stream when transcoding is available.
+
+`maxStreamingBitrate` can override the deployment bitrate cap for a single prepare request. Transcode resolution is controlled by deployment settings: `STREAM_MAX_WIDTH` and `STREAM_MAX_HEIGHT`.
 
 The backend calls Jellyfin `PlaybackInfo` using the active Jellyfin account for the auth mode. Per-user mode uses the authenticated Discord user's linked Jellyfin token. Shared mode uses the configured shared Jellyfin account. The backend selects an HLS or direct stream, creates a short-lived stream ticket, and returns only a local media proxy URL:
 
@@ -496,4 +501,4 @@ If the ticket is invalid or expired, media routes return:
 GET /media/direct/:ticket/stream
 ```
 
-Direct mode proxies a Jellyfin direct stream and forwards the browser's `Range` header. This is used when `STREAM_PROXY_MODE=direct`, or as a direct-stream path for supported media sources.
+Direct mode proxies Jellyfin stream bytes and forwards the browser's `Range` header. It is used when `STREAM_PROXY_MODE=direct`, as a direct-stream path for supported media sources, and as the per-client MP4 compatibility fallback when `POST /api/playback/prepare` receives `preferredPlayMethod=direct`.

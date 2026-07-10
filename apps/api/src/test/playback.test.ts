@@ -28,8 +28,16 @@ describe("playback routes", () => {
       if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
         const parsed = new URL(url);
         const headers = new Headers(init?.headers);
+        const body = JSON.parse(init?.body?.toString() ?? "{}");
 
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
+        expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
+        expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
+        expect(body.DeviceProfile.TranscodingProfiles[0]).toMatchObject({
+          Protocol: "hls",
+          MaxWidth: "1920",
+          MaxHeight: "1080"
+        });
         expect(parsed.searchParams.has("SubtitleStreamIndex")).toBe(false);
         expect(parsed.searchParams.has("SubtitleMethod")).toBe(false);
 
@@ -59,6 +67,8 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
         expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
+        expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
+        expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
         expect(parsed.searchParams.has("SubtitleStreamIndex")).toBe(false);
         expect(parsed.searchParams.has("SubtitleMethod")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
@@ -164,6 +174,8 @@ describe("playback routes", () => {
         expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
         expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
         expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
+        expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
+        expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
         expect(parsed.searchParams.has("SegmentContainer")).toBe(false);
         expect(parsed.searchParams.has("ApiKey")).toBe(false);
         expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
@@ -337,6 +349,102 @@ describe("playback routes", () => {
     });
 
     expect(playlist.statusCode).toBe(200);
+
+    await app.close();
+  });
+
+  it("prepares a forced H.264/AAC MP4 fallback stream when requested by the client", async () => {
+    const app = await buildPlaybackApp();
+
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input.toString();
+
+      if (url === "https://jellyfin.example.com/Users/AuthenticateByName") {
+        return authResponse();
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Items/movie-1/PlaybackInfo")) {
+        const parsed = new URL(url);
+
+        expect(parsed.searchParams.get("AudioStreamIndex")).toBe("2");
+        expect(parsed.searchParams.get("SubtitleStreamIndex")).toBe("4");
+        expect(parsed.searchParams.get("SubtitleMethod")).toBe("Encode");
+
+        return jsonResponse({
+          MediaSources: [{
+            Id: "media-1",
+            Container: "mkv",
+            SupportsDirectPlay: false,
+            SupportsDirectStream: false,
+            SupportsTranscoding: true,
+            MediaStreams: [
+              { Type: "Video", Codec: "hevc", Index: 0 },
+              { Type: "Audio", Codec: "flac", Index: 2 },
+              { Type: "Subtitle", Codec: "ass", Index: 4 }
+            ]
+          }]
+        });
+      }
+
+      if (url.startsWith("https://jellyfin.example.com/Videos/movie-1/stream.mp4")) {
+        const parsed = new URL(url);
+        const headers = new Headers(init?.headers);
+
+        expect(parsed.searchParams.get("MediaSourceId")).toBe("media-1");
+        expect(parsed.searchParams.get("VideoCodec")).toBe("h264");
+        expect(parsed.searchParams.get("AudioCodec")).toBe("aac");
+        expect(parsed.searchParams.get("MaxStreamingBitrate")).toBe("20000000");
+        expect(parsed.searchParams.get("MaxWidth")).toBe("1920");
+        expect(parsed.searchParams.get("MaxHeight")).toBe("1080");
+        expect(parsed.searchParams.get("VideoBitrate")).toBe("19616000");
+        expect(parsed.searchParams.get("AudioBitrate")).toBe("384000");
+        expect(parsed.searchParams.get("TranscodingMaxAudioChannels")).toBe("2");
+        expect(parsed.searchParams.get("RequireAvc")).toBe("false");
+        expect(parsed.searchParams.get("AudioStreamIndex")).toBe("2");
+        expect(parsed.searchParams.get("SubtitleStreamIndex")).toBe("4");
+        expect(parsed.searchParams.get("SubtitleMethod")).toBe("Encode");
+        expect(headers.get("authorization")).toContain("Token=\"secret-jellyfin-token\"");
+
+        return textResponse("mp4", 200, "video/mp4");
+      }
+
+      return jsonResponse({}, 404);
+    }));
+
+    const appToken = await linkAccount(app);
+    const prepared = await app.inject({
+      method: "POST",
+      url: "/api/playback/prepare",
+      headers: {
+        authorization: `Bearer ${appToken}`
+      },
+      payload: {
+        itemId: "movie-1",
+        audioStreamIndex: 2,
+        subtitleStreamIndex: 4,
+        preferredPlayMethod: "direct"
+      }
+    });
+
+    expect(prepared.statusCode).toBe(200);
+    expect(prepared.json().playback).toMatchObject({
+      itemId: "movie-1",
+      mediaSourceId: "media-1",
+      playMethod: "direct",
+      container: "mp4",
+      videoCodec: "h264",
+      audioCodec: "aac"
+    });
+    expect(prepared.json().playback.streamUrl).toMatch(/^\/media\/direct\/.+\/stream\.mp4$/);
+
+    const stream = await app.inject({
+      method: "GET",
+      url: prepared.json().playback.streamUrl as string
+    });
+
+    expect(stream.statusCode).toBe(200);
+    expect(stream.headers["content-type"]).toContain("video/mp4");
+    expect(stream.body).toBe("mp4");
 
     await app.close();
   });

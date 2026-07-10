@@ -1,5 +1,7 @@
 import Hls from "hls.js";
 
+const highQualityBandwidthEstimate = 20_000_000;
+
 export type PlayerSource = {
   playMethod: "hls" | "direct";
   streamUrl: string;
@@ -15,6 +17,9 @@ export function attachVideoSource(video: HTMLVideoElement, source: PlayerSource,
       let networkRecoveryAttempts = 0;
       let mediaRecoveryAttempted = false;
       const hls = new Hls({
+        abrEwmaDefaultEstimate: highQualityBandwidthEstimate,
+        abrEwmaDefaultEstimateMax: highQualityBandwidthEstimate,
+        capLevelToPlayerSize: false,
         enableWorker: true
       });
       hls.on(Hls.Events.ERROR, (_event, data) => {

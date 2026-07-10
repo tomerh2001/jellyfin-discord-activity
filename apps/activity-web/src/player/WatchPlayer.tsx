@@ -63,6 +63,7 @@ type PreflightState =
   | { status: "error"; message: string };
 
 type PreparedTrackState = PlaybackPrepareResponse["playback"] | undefined;
+type PreferredPlayMethod = "hls" | "direct";
 
 export function WatchPlayer({
   appToken,
@@ -86,6 +87,7 @@ export function WatchPlayer({
   const videoFrameRef = useRef<HTMLDivElement | null>(null);
   const cleanupRef = useRef<(() => void) | undefined>(undefined);
   const preparedKeyRef = useRef<string | undefined>(undefined);
+  const activePlayMethodRef = useRef<PreferredPlayMethod | undefined>(undefined);
   const suppressEventsUntilRef = useRef(0);
   const [playerState, setPlayerState] = useState<PlayerState>({ status: "idle" });
   const [playerNotice, setPlayerNotice] = useState<string | undefined>();
@@ -95,13 +97,16 @@ export function WatchPlayer({
   const [stagedSubtitleStreamIndex, setStagedSubtitleStreamIndex] = useState(-1);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpandedPlayer, setIsExpandedPlayer] = useState(false);
+  const [preferredPlayMethod, setPreferredPlayMethod] = useState<PreferredPlayMethod>("hls");
 
   useEffect(() => {
     cleanupRef.current?.();
     cleanupRef.current = undefined;
     preparedKeyRef.current = undefined;
+    activePlayMethodRef.current = undefined;
     setPlayerState({ status: "idle" });
     setPlayerNotice(undefined);
+    setPreferredPlayMethod("hls");
   }, [itemId]);
 
   useEffect(() => () => cleanupRef.current?.(), []);
@@ -222,7 +227,7 @@ export function WatchPlayer({
       return;
     }
 
-    const prepareKey = `${itemId}:${mediaSourceId ?? ""}:${audioStreamIndex ?? ""}:${subtitleStreamIndex ?? ""}`;
+    const prepareKey = `${itemId}:${mediaSourceId ?? ""}:${audioStreamIndex ?? ""}:${subtitleStreamIndex ?? ""}:${preferredPlayMethod}`;
 
     if (preparedKeyRef.current === prepareKey) {
       return;
@@ -235,14 +240,17 @@ export function WatchPlayer({
 
     async function prepareSelectedPlayback() {
       setPlayerState({ status: "preparing" });
-      setPlayerNotice(undefined);
+      setPlayerNotice(preferredPlayMethod === "direct"
+        ? "Using the MP4 compatibility fallback for this client."
+        : undefined);
 
       try {
         const response = await preparePlayback(token, {
           itemId: selectedItemId,
           ...(mediaSourceId ? { mediaSourceId } : {}),
           ...(audioStreamIndex !== undefined ? { audioStreamIndex } : {}),
-          ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {})
+          ...(subtitleStreamIndex !== undefined && subtitleStreamIndex >= 0 ? { subtitleStreamIndex } : {}),
+          ...(preferredPlayMethod === "direct" ? { preferredPlayMethod } : {})
         });
 
         if (controller.signal.aborted || !videoRef.current) {
@@ -254,11 +262,12 @@ export function WatchPlayer({
         const wasPlaying = !video.paused && !video.ended;
         suppressEventsUntilRef.current = Date.now() + 2000;
         cleanupRef.current?.();
+        activePlayMethodRef.current = response.playback.playMethod;
         cleanupRef.current = attachVideoSource(video, {
           playMethod: response.playback.playMethod,
           streamUrl: response.playback.streamUrl
         }, (message) => {
-          setPlayerState({ status: "error", message });
+          handlePlaybackSourceError(message);
         });
         if (previousTime > 0) {
           video.currentTime = previousTime;
@@ -289,7 +298,7 @@ export function WatchPlayer({
     void prepareSelectedPlayback();
 
     return () => controller.abort();
-  }, [appToken, audioStreamIndex, canPrepare, itemId, mediaSourceId, subtitleStreamIndex]);
+  }, [appToken, audioStreamIndex, canPrepare, itemId, mediaSourceId, preferredPlayMethod, subtitleStreamIndex]);
 
   useEffect(() => {
     if (isHost || playerState.status !== "ready" || !remoteStateUpdate || !videoRef.current) {
@@ -445,14 +454,25 @@ export function WatchPlayer({
     const error = videoRef.current?.error;
 
     if (!error) {
-      setPlayerState({ status: "error", message: "Video playback failed." });
+      handlePlaybackSourceError("Video playback failed.");
       return;
     }
 
-    setPlayerState({
-      status: "error",
-      message: mediaErrorMessage(error)
-    });
+    handlePlaybackSourceError(mediaErrorMessage(error));
+  }
+
+  function handlePlaybackSourceError(message: string): void {
+    if (activePlayMethodRef.current === "hls" && preferredPlayMethod !== "direct") {
+      preparedKeyRef.current = undefined;
+      cleanupRef.current?.();
+      cleanupRef.current = undefined;
+      activePlayMethodRef.current = undefined;
+      setPlayerNotice("HLS playback failed in this client. Trying the MP4 compatibility fallback.");
+      setPreferredPlayMethod("direct");
+      return;
+    }
+
+    setPlayerState({ status: "error", message });
   }
 
   function prepareStagedMedia(): void {

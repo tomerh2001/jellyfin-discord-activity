@@ -29,6 +29,8 @@ export const envSchema = z.object({
   JELLYFIN_SHARED_PASSWORD: z.string().default(""),
   STREAM_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(300),
   STREAM_MAX_BITRATE: z.coerce.number().int().positive().default(20_000_000),
+  STREAM_MAX_WIDTH: z.coerce.number().int().positive().default(1920),
+  STREAM_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),
   STREAM_PROXY_MODE: z.enum(["hls-first", "direct"]).default("hls-first"),
   ROOM_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
   ROOM_IDLE_TTL_SECONDS: z.coerce.number().int().positive().default(900),
