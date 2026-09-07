@@ -1,0 +1,29 @@
+service:
+  slug: jellyfin-discord-activity
+  name: Jellyfin Watch
+  description: Watch Parties
+  group: Media
+  domain: watch.tomerh2001.com
+  ip: 10.40.0.9
+  port: 3000
+  image: ghcr.io/tomerh2001/jellyfin-discord-activity
+  tag: latest
+  timezone: Asia/Jerusalem
+
+storage:
+  child_datasets: []
+
+compose:
+  companions: []
+  healthcheck:
+    enabled: true
+    test: '["CMD", "node", "-e", "fetch(\"http://127.0.0.1:3000/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]'
+
+homepage:
+  enabled: true
+  widget:
+    enabled: false
+
+deploy:
+  auto_up: false
+  auto_fix_until_healthy: false

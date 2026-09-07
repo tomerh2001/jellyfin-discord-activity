@@ -287,8 +287,10 @@ export async function getJellyfinItemImage(appToken: string, itemId: string, inp
   return response.blob();
 }
 
-export async function getCurrentRoom(instanceId: string, signal?: AbortSignal): Promise<RoomResponse> {
-  const response = await fetch(apiUrl(`/api/rooms/current?instanceId=${encodeURIComponent(instanceId)}`), signal ? { signal } : undefined);
+export async function getCurrentRoom(appToken: string, instanceId: string, signal?: AbortSignal): Promise<RoomResponse> {
+  const response = await fetch(apiUrl(`/api/rooms/current?instanceId=${encodeURIComponent(instanceId)}`), {
+    headers: { Authorization: `Bearer ${appToken}` }, ...(signal ? { signal } : {})
+  });
 
   if (!response.ok) {
     throw await parseApiError(response);

@@ -1,8 +1,49 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
+import { exchangeDiscordCode } from "../services/discord.js";
+
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Discord auth routes", () => {
+  it("exchanges Embedded SDK codes without injecting a configured portal redirect URI", async () => {
+    const env = loadEnv({ NODE_ENV: "test", DISCORD_REDIRECT_URI: "https://portal.example/callback" });
+    const upstream = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = new URLSearchParams(String(init?.body));
+      expect(body.get("grant_type")).toBe("authorization_code");
+      expect(body.get("client_id")).toBe(env.DISCORD_CLIENT_ID);
+      expect(body.get("code")).toBe("embedded-sdk-code");
+      expect(body.has("redirect_uri")).toBe(false);
+      return new Response(JSON.stringify({ access_token: "oauth-token", token_type: "Bearer", expires_in: 3600, scope: "identify" }));
+    });
+    vi.stubGlobal("fetch", upstream);
+    await expect(exchangeDiscordCode(env, "embedded-sdk-code")).resolves.toMatchObject({ accessToken: "oauth-token", scope: "identify" });
+    expect(upstream).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an explicitly supplied redirect URI for its matching code exchange", async () => {
+    const env = loadEnv({ NODE_ENV: "test", DISCORD_REDIRECT_URI: "https://portal.example/callback" });
+    vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
+      expect(new URLSearchParams(String(init?.body)).get("redirect_uri")).toBe(env.DISCORD_REDIRECT_URI);
+      return new Response(JSON.stringify({ access_token: "oauth-token", token_type: "Bearer", expires_in: 3600 }));
+    }));
+    await exchangeDiscordCode(env, "browser-code", env.DISCORD_REDIRECT_URI);
+  });
+
+  it("rejects an unrecognized explicit redirect URI before attempting OAuth exchange", async () => {
+    const app = await buildApp(loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "false" }));
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/discord/exchange", payload: {
+        code: "code", instanceId: "instance-1", redirectUri: "https://unrecognized.example/callback"
+      } });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("invalid_redirect_uri");
+      expect(upstream).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
   it("exchanges a dev mock code for an app token and identifies /api/me", async () => {
     const app = await buildApp(loadEnv({
       NODE_ENV: "test",

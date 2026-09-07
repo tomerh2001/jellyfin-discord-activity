@@ -1,304 +1,52 @@
 # Deployment
 
-This app is designed to run as one backend container that serves the built Discord Activity frontend, REST API, WebSocket endpoint, and media proxy from a single origin.
+The published container serves the Activity, REST API, WebSocket endpoint, and media proxy on port 3000. Use `ghcr.io/tomerh2001/jellyfin-discord-activity:latest`; GitHub Actions publishes it from `main` after checks pass.
 
-## Production Topology
+## Configuration and storage
 
-Recommended production shape:
+Copy `.env.example` to an untracked `.env`. Fill in the Discord IDs, keys, allowlists, public HTTPS/WSS URLs, and Jellyfin account configuration. `PUBLIC_DISCORD_CLIENT_ID` must match `DISCORD_CLIENT_ID`. Production requires `DEV_AUTH_MOCK=false` and `JELLYFIN_ALLOW_CUSTOM_SERVERS=false`.
 
-```text
-Discord client
-  -> Discord Activity iframe/proxy
-    -> https://watch.example.com
-      -> Nginx Proxy Manager
-        -> http://YOUR_DOCKER_HOST_IP:3000
-          -> jellyfin-discord-activity container
-            -> Jellyfin over LAN or private Docker network
-```
+The container runs as an unprivileged user. Its UID/GID can be remapped with Compose `user:`. Mount a writable persistent volume at `/data`; `DATABASE_URL=file:/data/app.db` places the encrypted Jellyfin account store and `rooms.json` snapshots there. Set `LOG_DIR=/data/logs` for file logging, or leave it empty for Docker logs only. Room snapshots restore paused and without host ownership; live app sessions never persist.
 
-The browser should never call Jellyfin directly. The browser calls `/api`, `/ws`, and `/media` on the Activity domain. The backend calls Jellyfin server-side.
-
-## Host Requirements
-
-Install on the machine that will run the app:
-
-- Docker Engine.
-- Docker Compose v2.
-- Git.
-- Node.js 22 and pnpm if you want to run host-side checks such as `pnpm smoke`.
-
-The app listens on container port `3000`. The default `docker-compose.yml` publishes host port `3000`.
-
-## Fresh Clone Deployment
-
-1. Clone the repository and enter it:
-
-   ```bash
-   git clone https://github.com/camarokris/jellyfin-discord-activity.git
-   cd jellyfin-discord-activity
-   ```
-
-2. Create `.env`:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Generate secrets:
-
-   ```bash
-   openssl rand -base64 32
-   openssl rand -base64 32
-   ```
-
-4. Edit `.env`.
-
-   Minimum values for your Nginx Proxy Manager setup:
-
-   ```bash
-   PUBLIC_BASE_URL=https://watch.example.com
-   PUBLIC_WS_URL=wss://watch.example.com/ws
-   PUBLIC_DISCORD_CLIENT_ID=your_application_id
-
-   DISCORD_CLIENT_ID=your_application_id
-   DISCORD_CLIENT_SECRET=your_client_secret
-   DISCORD_REDIRECT_URI=https://watch.example.com/api/discord/callback
-
-   APP_SESSION_SECRET=generated_32_byte_value
-   APP_SESSION_TTL_SECONDS=28800
-   TOKEN_ENCRYPTION_KEY=generated_base64_32_byte_value
-   DEV_AUTH_MOCK=false
-
-   DATABASE_URL=file:/data/app.db
-   JELLYFIN_DEFAULT_SERVER_URL=http://your-jellyfin-lan-ip:8096
-   JELLYFIN_ALLOW_CUSTOM_SERVERS=false
-   JELLYFIN_AUTH_MODE=per-user
-   JELLYFIN_SHARED_USERNAME=
-   JELLYFIN_SHARED_PASSWORD=
-
-   ALLOWED_ORIGINS=https://watch.example.com
-   TRUST_PROXY=true
-   NODE_ENV=production
-   LOG_LEVEL=info
-   # Optional outside Docker. docker-compose.yml sets LOG_DIR=/logs → ./logs/app
-   PORT=3000
-   ```
-
-   Leave `JELLYFIN_AUTH_MODE=per-user` if each Discord user should link their own Jellyfin account. Change to shared mode only if one dedicated Jellyfin account should be used for all Discord watchers:
-
-   ```bash
-   JELLYFIN_AUTH_MODE=shared
-   JELLYFIN_SHARED_USERNAME=discord-watch
-   JELLYFIN_SHARED_PASSWORD=replace_with_that_users_password
-   ```
-
-   For shared mode, create the `discord-watch` user in Jellyfin first and grant it access only to libraries intended for the Discord Activity. Do not use a Jellyfin admin account.
-
-5. Start the app:
-
-   ```bash
-   docker compose up --build -d
-   ```
-
-6. Confirm the container is running:
-
-   ```bash
-   docker compose ps
-   tail -n 100 logs/app/app.log
-   # or: docker compose logs --tail 100 app
-   ```
-
-7. Confirm local health:
-
-   ```bash
-   curl http://localhost:3000/health
-   ```
-
-8. Confirm public health:
-
-   ```bash
-   curl https://watch.example.com/health
-   ```
-
-## Nginx Proxy Manager
-
-Create or edit a Proxy Host:
+Five backend secrets support Docker secret files:
 
 ```text
-Domain Names: watch.example.com
-Scheme: http
-Forward Hostname / IP: YOUR_DOCKER_HOST_IP
-Forward Port: 3000
-Cache Assets: optional
-Block Common Exploits: enabled
-Websockets Support: enabled
-Access List: public, unless you know Discord can still reach it
-SSL Certificate: valid certificate for watch.example.com
-Force SSL: enabled
-HTTP/2 Support: enabled
+DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord_client_secret
+DISCORD_BOT_TOKEN_FILE=/run/secrets/discord_bot_token
+APP_SESSION_SECRET_FILE=/run/secrets/app_session_secret
+TOKEN_ENCRYPTION_KEY_FILE=/run/secrets/token_encryption_key
+JELLYFIN_SHARED_PASSWORD_FILE=/run/secrets/jellyfin_shared_password
 ```
 
-Do not create separate Nginx locations that strip or rewrite `/api`, `/ws`, `/media`, or `/assets`. The app expects to receive those paths unchanged.
+Do not also set their plain environment equivalents. Use random secrets of at least 32 characters for app sessions, and base64-encoded random 32 bytes for the token encryption key. Keep files readable only by the service and administrators. Back up the encryption key with `/data`; changing it invalidates stored Jellyfin tokens.
 
-Because `/ws` carries a short-lived app session token in a query parameter, avoid storing query strings in reverse proxy access logs when possible.
+Shared mode uses a dedicated non-admin Jellyfin user. Grant media playback, remuxing/transcoding, and only the intended movie/show libraries. Disable deletion, downloads, administration, and management. Do not mount Jellyfin's administrator key into this app.
 
-## Discord Portal Deployment Values
+## HTTPS routing
 
-OAuth2 redirect:
+Route one HTTPS hostname to the container's port 3000, preserving `/`, `/api`, `/ws`, `/media`, and `/assets`. Enable WebSocket upgrades. Map `/` in Discord's Activities URL Mappings to that hostname without a scheme.
 
-```text
-https://watch.example.com/api/discord/callback
-```
+Keep existing Authentik routing policies intact. The app has Discord OAuth and room authorization; it has no native Authentik OIDC or trusted-header login. A forward-auth middleware must preserve the app's `Authorization: Bearer` header. A service-local copy of the same Authentik middleware can omit only `Authorization` from its response-header list while keeping the login gate unchanged.
 
-Activity URL mapping:
+The Activity proxy and Discord webhook verifier cannot normally complete an interactive edge login. If this prevents use, an exact operator-approved routing decision is required. Do not silently exempt media, API, static, WebSocket, callback, or webhook routes.
 
-```text
-PREFIX      TARGET
-/           watch.example.com
-```
+Media URLs contain short-lived bearer tickets. The app redacts them from request logs; configure reverse-proxy logs to omit sensitive URLs as well. Disable public caching of authenticated API and media responses.
 
-The mapping target is only the hostname. Do not include `https://`.
-
-Optional explicit mappings:
-
-```text
-PREFIX      TARGET
-/api        watch.example.com
-/ws         watch.example.com
-/media      watch.example.com
-/assets     watch.example.com
-```
-
-## Jellyfin Reachability
-
-The app container must reach Jellyfin. If Jellyfin is on your LAN, use the LAN URL in `.env`, for example:
+## Start and verify
 
 ```bash
-JELLYFIN_DEFAULT_SERVER_URL=http://10.1.0.50:8096
+docker compose pull
+docker compose up -d
+docker compose ps
+docker compose exec app node -e "fetch('http://127.0.0.1:3000/health').then(r=>r.json()).then(console.log)"
 ```
 
-Test from inside the container:
+The image has a healthcheck. Confirm the built frontend is served at `/`, unauthenticated room/library requests return 401, unsigned interactions return 401, and backend Jellyfin authentication succeeds. Check the HTTPS route separately from internal health; an edge redirect means Discord access remains unverified.
 
-```bash
-docker compose exec app wget -qO- "$JELLYFIN_DEFAULT_SERVER_URL/System/Info/Public"
-```
+Complete [Discord setup](discord-setup.md), register commands, and test the same Activity with two real Discord users. Verify video/audio, pause/seek synchronization, audio/subtitle choices, host handoff, logout revocation, and a restart. A healthcheck or unit test does not establish Discord client playback compatibility.
 
-If that fails, fix routing, firewall, Docker networking, or the Jellyfin URL before testing Discord playback.
+## Updates
 
-## Jellyfin Auth Mode
+Application changes go through a source branch, reviewed pull request, merge to `main`, and successful CI image publication. Pull the moving `latest` tag and recreate the container. Record the deployed OCI revision/digest when diagnosing changes. Do not deploy live source bind mounts or permanent locally built patches.
 
-Per-user mode:
-
-```bash
-JELLYFIN_AUTH_MODE=per-user
-JELLYFIN_SHARED_USERNAME=
-JELLYFIN_SHARED_PASSWORD=
-```
-
-This is the default. After Discord authentication, each user links their own Jellyfin account in the Activity. Library browsing, item lookup, and playback preparation use that user's saved encrypted Jellyfin access token.
-
-Shared mode:
-
-```bash
-JELLYFIN_AUTH_MODE=shared
-JELLYFIN_SHARED_USERNAME=discord-watch
-JELLYFIN_SHARED_PASSWORD=replace_with_that_users_password
-```
-
-In shared mode, Discord authentication is still required, but the Activity hides the Jellyfin link form. The backend authenticates as the shared Jellyfin user, stores the returned access token encrypted under `/data`, and uses that account for all authenticated Discord users. Shared mode always uses `JELLYFIN_DEFAULT_SERVER_URL`; custom Jellyfin server URLs are ignored.
-
-Restart the container after changing auth mode or shared account credentials:
-
-```bash
-docker compose up -d --force-recreate
-```
-
-## Persistent Data
-
-The compose file mounts:
-
-```yaml
-./data:/data
-```
-
-Linked Jellyfin tokens are stored under `/data` and encrypted with `TOKEN_ENCRYPTION_KEY`. In per-user mode, those records belong to individual Discord users. In shared mode, one reserved internal shared account record is stored in the same file. If you change `TOKEN_ENCRYPTION_KEY` after accounts have been stored, existing encrypted tokens will no longer decrypt. Per-user users will need to relink Jellyfin; shared mode will need to reauthenticate with the configured shared username and password.
-
-Room state, participants, and stream tickets are in memory. They are intentionally cleared on restart.
-
-## Production Smoke Test
-
-The smoke script needs a valid app token to test `/ws`. For local pre-production testing, use dev mock auth:
-
-1. Temporarily set:
-
-   ```bash
-   DEV_AUTH_MOCK=true
-   ```
-
-2. Recreate the app:
-
-   ```bash
-   docker compose up --build -d
-   ```
-
-3. Run:
-
-   ```bash
-   pnpm smoke
-   ```
-
-4. For the public URL:
-
-   ```bash
-   SMOKE_BASE_URL=https://watch.example.com \
-   SMOKE_WS_URL=wss://watch.example.com/ws \
-   pnpm smoke
-   ```
-
-5. Set mock auth back to:
-
-   ```bash
-   DEV_AUTH_MOCK=false
-   ```
-
-6. Recreate the app:
-
-   ```bash
-   docker compose up -d --force-recreate
-   ```
-
-Never leave `DEV_AUTH_MOCK=true` on a public deployment.
-
-## Runtime Tuning
-
-Recommended defaults:
-
-```bash
-STREAM_TICKET_TTL_SECONDS=14400
-STREAM_MAX_BITRATE=20000000
-STREAM_MAX_WIDTH=1920
-STREAM_MAX_HEIGHT=1080
-STREAM_PROXY_MODE=hls-first
-ROOM_MAX_PARTICIPANTS=20
-ROOM_IDLE_TTL_SECONDS=900
-SYNC_STATE_UPDATE_MS=1000
-SYNC_HARD_SEEK_THRESHOLD_SECONDS=2.0
-SYNC_SOFT_DRIFT_THRESHOLD_SECONDS=0.08
-RATE_LIMIT_MAX=300
-RATE_LIMIT_WINDOW=1 minute
-```
-
-Lower `STREAM_MAX_BITRATE` if Jellyfin transcoding or upload bandwidth is struggling. Lower `ROOM_MAX_PARTICIPANTS` if your Jellyfin host cannot handle many simultaneous transcodes.
-
-## Updating
-
-From the repo directory:
-
-```bash
-git pull
-docker compose up --build -d
-docker compose logs --tail 100 app
-curl http://localhost:3000/health
-```
-
-If dependencies or environment variables changed, compare your `.env` with `.env.example`.
+The home-server provisioning input is [deploy/service-spec.yaml](../deploy/service-spec.yaml). Its generated operational Compose and environment files live in the host's Stacks repository; runtime credentials live in 1Password and the service's data dataset.

@@ -1,4 +1,4 @@
-import { apiError } from "@app/shared";
+import { apiError, type DiscordContext } from "@app/shared";
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { AppEnv } from "../env.js";
 import { getBearerToken, verifyAppToken } from "../services/appSession.js";
@@ -44,7 +44,8 @@ export function getAppSessionUser(session: AppSession) {
 export class AuthError extends Error {
   constructor(
     readonly code: string,
-    readonly publicMessage: string
+    readonly publicMessage: string,
+    readonly statusCode = 401
   ) {
     super(code);
   }
@@ -52,4 +53,15 @@ export class AuthError extends Error {
 
 export function sendAuthError(error: AuthError) {
   return apiError(error.code, error.publicMessage);
+}
+
+/** Assert every room operation is confined to the instance verified at OAuth exchange. */
+export function requireRoomContext(session: AppSession, requested: DiscordContext): DiscordContext {
+  const context = session.discordContext;
+  if (!context || context.instanceId !== requested.instanceId
+    || (requested.guildId !== undefined && requested.guildId !== context.guildId)
+    || (requested.channelId !== undefined && requested.channelId !== context.channelId)) {
+    throw new AuthError("room_access_denied", "This session cannot access that Discord Activity room.", 403);
+  }
+  return context;
 }

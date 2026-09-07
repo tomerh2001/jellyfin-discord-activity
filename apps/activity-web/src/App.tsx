@@ -105,6 +105,7 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
   const [room, setRoom] = useState<RoomResponse["room"] | undefined>();
   const [roomError, setRoomError] = useState<string | undefined>();
   const [stagedMedia, setStagedMedia] = useState<HostStagedMedia | undefined>();
+  const appToken = authState.status === "authenticated" ? authState.exchange.appToken : undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -135,12 +136,14 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
   }, [discord]);
 
   useEffect(() => {
+    if (!appToken) return;
     const controller = new AbortController();
 
     async function refreshRoom() {
       try {
-        const response = await getCurrentRoom(discord.instanceId, controller.signal);
+        const response = await getCurrentRoom(appToken!, discord.instanceId, controller.signal);
         setRoom(response.room);
+        setRoomError(undefined);
       } catch (error) {
         if (!controller.signal.aborted) {
           setRoomError(error instanceof Error ? error.message : "Could not load room state.");
@@ -157,7 +160,7 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
       controller.abort();
       window.clearInterval(interval);
     };
-  }, [discord.instanceId]);
+  }, [discord.instanceId, appToken]);
 
   async function authenticate() {
     setAuthState({ status: "pending" });
@@ -200,7 +203,6 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
     setJellyfinLinked(false);
   }
 
-  const appToken = authState.status === "authenticated" ? authState.exchange.appToken : undefined;
   const discordUserId = authState.status === "authenticated" ? authState.me.discordUser.id : undefined;
   const roomSync = useRoomSync({
     appToken,

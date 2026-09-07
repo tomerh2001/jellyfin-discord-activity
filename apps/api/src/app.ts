@@ -7,6 +7,8 @@ import { securityPlugin } from "./plugins/security.js";
 import { staticFrontendPlugin } from "./plugins/static.js";
 import { websocketPlugin } from "./plugins/websocket.js";
 import { discordAuthRoutes } from "./routes/discordAuth.js";
+import { discordInteractionRoutes } from "./routes/discordInteractions.js";
+import { roomManager } from "./services/roomManager.js";
 import { healthRoutes } from "./routes/health.js";
 import { jellyfinAuthRoutes } from "./routes/jellyfinAuth.js";
 import { jellyfinLibraryRoutes } from "./routes/jellyfinLibrary.js";
@@ -21,6 +23,10 @@ export async function buildApp(env: AppEnv = loadEnv()) {
   });
 
   app.decorate("envConfig", env);
+  if (env.NODE_ENV !== "test") {
+    roomManager.configurePersistence(env.DATABASE_URL);
+    app.addHook("onClose", async () => { roomManager.flushPersistence(); });
+  }
   app.decorateRequest("appSession");
   app.setErrorHandler((error, request, reply) => {
     const appShapedError = error as unknown as { error?: { code?: string; message?: string }; statusCode?: number };
@@ -43,6 +49,7 @@ export async function buildApp(env: AppEnv = loadEnv()) {
   await app.register(websocketPlugin);
   await app.register(healthRoutes);
   await app.register(discordAuthRoutes);
+  await app.register(discordInteractionRoutes);
   await app.register(jellyfinAuthRoutes);
   await app.register(jellyfinLibraryRoutes);
   await app.register(playbackRoutes);

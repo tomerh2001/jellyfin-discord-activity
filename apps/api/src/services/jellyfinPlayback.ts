@@ -111,6 +111,8 @@ export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, inp
 
   const response = await fetch(url, {
     method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(30_000),
     headers: {
       Authorization: jellyfinAuthorizationHeader(token),
       "Content-Type": "application/json"
@@ -143,11 +145,12 @@ export async function getPlaybackInfo(env: AppEnv, account: JellyfinAccount, inp
     throw new JellyfinError("jellyfin_media_source_missing", "No playable Jellyfin media source was returned.", response.status, payload);
   }
 
-  return selectPlaybackMethod(env, input, source, result.PlaySessionId ?? undefined);
+  return selectPlaybackMethod(env, account.serverUrl, input, source, result.PlaySessionId ?? undefined);
 }
 
 function selectPlaybackMethod(
   env: AppEnv,
+  serverUrl: string,
   input: PlaybackInfoInput,
   source: MediaSource,
   playSessionId?: string
@@ -155,6 +158,12 @@ function selectPlaybackMethod(
   const streams = source.MediaStreams ?? [];
   const audioTracks = streams.filter((stream) => stream.Type === "Audio" && stream.Index !== undefined).map((stream) => mapTrack(stream, "Audio"));
   const subtitleTracks = streams.filter((stream) => stream.Type === "Subtitle" && stream.Index !== undefined).map((stream) => mapTrack(stream, "Subtitle"));
+  if (input.audioStreamIndex !== undefined && !audioTracks.some((track) => track.index === input.audioStreamIndex)) {
+    throw new JellyfinError("jellyfin_track_missing", "The selected audio track is unavailable.", 400, {});
+  }
+  if (isSelectedSubtitleStream(input.subtitleStreamIndex) && !subtitleTracks.some((track) => track.index === input.subtitleStreamIndex)) {
+    throw new JellyfinError("jellyfin_track_missing", "The selected subtitle track is unavailable.", 400, {});
+  }
   const selectedAudioStreamIndex = input.audioStreamIndex ?? audioTracks.find((track) => track.isDefault)?.index ?? audioTracks[0]?.index;
   const selectedSubtitleStreamIndex = input.subtitleStreamIndex ?? -1;
   const selectedAudio = selectedAudioStreamIndex !== undefined
@@ -169,13 +178,16 @@ function selectPlaybackMethod(
     audioTracks,
     subtitleTracks
   };
-  const remuxEligible = canRemuxBrowserSafe(source, videoCodec, audioCodec);
+  // Static=true returns the original file and cannot apply audio selection or
+  // burn subtitles. These choices must use an actual transcoding stream.
+  const requiresTrackSelection = isSelectedSubtitleStream(input.subtitleStreamIndex) || input.audioStreamIndex !== undefined;
+  const remuxEligible = !requiresTrackSelection && canRemuxBrowserSafe(source, videoCodec, audioCodec);
   const forceCompatDirect = input.preferredPlayMethod === "direct";
   const forceCompatWebm = input.preferredPlayMethod === "webm";
   const forceDeploymentDirect = env.STREAM_PROXY_MODE === "direct";
   const forceHls = input.preferredPlayMethod === "hls";
 
-  // Client compatibility: progressive WebM (VP9/Opus) for clients that reject H.264
+  // Client compatibility: progressive WebM (VP8/Opus) for clients that reject H.264
   // (common on some Linux Electron builds without proprietary codecs).
   if (forceCompatWebm) {
     if (source.SupportsTranscoding !== false) {
@@ -249,7 +261,7 @@ function selectPlaybackMethod(
   // Report delivery codecs (H.264/AAC), not source codecs (e.g. TrueHD), so clients/diagnostics
   // do not misread the stream as unplayable for the wrong reason.
   if (source.SupportsTranscoding !== false || isHlsTranscodingUrl(source)) {
-    const hlsPath = resolveHlsPath(env, input, source, playSessionId);
+    const hlsPath = resolveHlsPath(env, serverUrl, input, source, playSessionId);
 
     return {
       itemId: input.itemId,
@@ -263,7 +275,7 @@ function selectPlaybackMethod(
     };
   }
 
-  if (source.SupportsDirectPlay === false && source.SupportsDirectStream === false) {
+  if (requiresTrackSelection || (source.SupportsDirectPlay === false && source.SupportsDirectStream === false)) {
     throw new JellyfinError("jellyfin_direct_play_unavailable", "Jellyfin did not return a direct playable media source.", 200, source);
   }
 
@@ -360,22 +372,28 @@ function isHlsTranscodingUrl(source: MediaSource): boolean {
 
 function resolveHlsPath(
   env: AppEnv,
+  serverUrl: string,
   input: PlaybackInfoInput,
   source: MediaSource,
   playSessionId?: string
 ): string {
   if (isHlsTranscodingUrl(source) && source.TranscodingUrl) {
     // Keep Jellyfin session params, but force MSE-friendly fMP4 + baseline H.264.
-    return applyHlsCompatParams(sanitizeUpstreamPath(source.TranscodingUrl, playSessionId), env, input);
+    return applyHlsCompatParams(sanitizeUpstreamPath(source.TranscodingUrl, serverUrl, playSessionId), env, input);
   }
 
   return buildHlsPath(env, input, source, playSessionId);
 }
 
-function sanitizeUpstreamPath(transcodingUrl: string, playSessionId?: string): string {
-  const url = new URL(transcodingUrl, "https://jellyfin.local");
-  url.searchParams.delete("ApiKey");
-  url.searchParams.delete("api_key");
+function sanitizeUpstreamPath(transcodingUrl: string, serverUrl: string, playSessionId?: string): string {
+  const url = new URL(transcodingUrl, `${serverUrl}/`);
+  if (url.origin !== new URL(serverUrl).origin || url.username || url.password) {
+    throw new JellyfinError("jellyfin_media_target_invalid", "Jellyfin returned an invalid media target.", 502, {});
+  }
+  for (const key of [...url.searchParams.keys()]) {
+    if (["apikey", "api_key", "token", "access_token"].includes(key.toLowerCase())) url.searchParams.delete(key);
+  }
+  url.hash = "";
 
   if (playSessionId && !url.searchParams.get("PlaySessionId")) {
     url.searchParams.set("PlaySessionId", playSessionId);
@@ -402,6 +420,14 @@ function applyHlsCompatParams(upstreamPath: string, env: AppEnv, input: Playback
   url.searchParams.set("MaxHeight", String(quality.maxHeight));
   url.searchParams.set("VideoBitrate", String(quality.videoBitrate));
   url.searchParams.set("AudioBitrate", String(quality.audioBitrate));
+  if (input.audioStreamIndex !== undefined) url.searchParams.set("AudioStreamIndex", String(input.audioStreamIndex));
+  if (isSelectedSubtitleStream(input.subtitleStreamIndex)) {
+    url.searchParams.set("SubtitleStreamIndex", String(input.subtitleStreamIndex));
+    url.searchParams.set("SubtitleMethod", "Encode");
+  } else {
+    url.searchParams.delete("SubtitleStreamIndex");
+    url.searchParams.delete("SubtitleMethod");
+  }
 
   return `${url.pathname}${url.search}${url.hash}`;
 }

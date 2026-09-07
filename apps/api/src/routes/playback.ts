@@ -5,7 +5,7 @@ import {
 } from "@app/shared";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { AuthError, requireAppSession, sendAuthError } from "../plugins/auth.js";
+import { AuthError, requireAppSession, requireRoomContext, sendAuthError } from "../plugins/auth.js";
 import { JellyfinError } from "../services/jellyfin.js";
 import { JellyfinAccountResolutionError, withResolvedJellyfinAccount } from "../services/jellyfinAccountResolver.js";
 import { getPlaybackInfo } from "../services/jellyfinPlayback.js";
@@ -21,6 +21,7 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
   app.post("/api/playback/prepare", async (request, reply) => {
     try {
       const session = await requireAppSession(request);
+      requireRoomContext(session, { instanceId: session.discordContext?.instanceId ?? "" });
       const parsed = playbackPrepareRequestSchema.safeParse(request.body);
 
       if (!parsed.success) {
@@ -32,6 +33,7 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
         prepared: await getPlaybackInfo(app.envConfig, account, parsed.data)
       }));
       const { token, ticket } = streamTicketStore.create({
+        appSessionId: session.id,
         serverUrl: account.serverUrl,
         jellyfinUserId: account.jellyfinUserId,
         encryptedAccessToken: account.encryptedAccessToken,
@@ -79,7 +81,7 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
       return reply.send(body);
     } catch (error) {
       if (error instanceof AuthError) {
-        return reply.code(401).send(sendAuthError(error));
+        return reply.code(error.statusCode).send(sendAuthError(error));
       }
 
       if (error instanceof JellyfinAccountResolutionError) {
@@ -91,16 +93,15 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
           ? 401
           : error.code === "jellyfin_access_denied"
             ? 403
-            : 502;
+            : error.code === "jellyfin_track_missing" ? 400 : 502;
         request.log.warn({
-          err: error,
           jellyfinCode: error.code,
           preferredPlayMethod: (request.body as { preferredPlayMethod?: string } | undefined)?.preferredPlayMethod
         }, "Playback prepare rejected by Jellyfin");
         return reply.code(statusCode).send(apiError(error.code, error.publicMessage));
       }
 
-      request.log.warn({ err: error }, "Playback prepare failed");
+      request.log.warn({ failure: "unexpected_error" }, "Playback prepare failed");
       return reply.code(500).send(apiError("playback_prepare_failed", "Could not prepare playback."));
     }
   });
@@ -114,18 +115,18 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
     }
 
     try {
-      return await proxyHlsPlaylist(app.envConfig, ticket, token, reply, ticket.hlsPath);
+      return await proxyHlsPlaylist(app.envConfig, ticket, token, request, reply, ticket.hlsPath);
     } catch (error) {
       if (error instanceof StreamProxyError) {
         return reply.code(400).send(apiError(error.code, error.publicMessage));
       }
 
-      request.log.warn({ err: error }, "HLS playlist proxy failed");
+      request.log.warn({ failure: "unexpected_error" }, "HLS playlist proxy failed");
       return reply.code(502).send(apiError("hls_playlist_failed", "Could not load HLS playlist."));
     }
   });
 
-  app.get<{ Params: { token: string }; Querystring: { u?: string } }>("/media/hls/:token/asset", async (request, reply) => {
+  app.get<{ Params: { token: string }; Querystring: { a?: string } }>("/media/hls/:token/asset", async (request, reply) => {
     const token = request.params.token;
     const ticket = streamTicketStore.get(token);
 
@@ -133,18 +134,18 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send(apiError("stream_ticket_invalid", "Stream ticket is invalid or expired."));
     }
 
-    if (!request.query.u) {
-      return reply.code(400).send(apiError("invalid_request", "Missing HLS asset target."));
+    if (!request.query.a || Object.keys(request.query).some((key) => key !== "a")) {
+      return reply.code(400).send(apiError("invalid_request", "Provide an issued HLS asset identifier."));
     }
 
     try {
-      return await proxyHlsAsset(app.envConfig, ticket, token, request, reply, request.query.u);
+      return await proxyHlsAsset(app.envConfig, ticket, token, request, reply, request.query.a);
     } catch (error) {
       if (error instanceof StreamProxyError) {
         return reply.code(400).send(apiError(error.code, error.publicMessage));
       }
 
-      request.log.warn({ err: error }, "HLS asset proxy failed");
+      request.log.warn({ failure: "unexpected_error" }, "HLS asset proxy failed");
       return reply.code(502).send(apiError("hls_asset_failed", "Could not load HLS asset."));
     }
   });
@@ -175,7 +176,7 @@ export const playbackRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send(apiError(error.code, error.publicMessage));
       }
 
-      request.log.warn({ err: error }, "Direct stream proxy failed");
+      request.log.warn({ failure: "unexpected_error" }, "Direct stream proxy failed");
       return reply.code(502).send(apiError("direct_stream_failed", "Could not load direct stream."));
     }
   }

@@ -6,12 +6,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/camarokris/jellyfin-discord-activity.git"
+    "url": "https://github.com/tomerh2001/jellyfin-discord-activity.git"
   },
   "bugs": {
-    "url": "https://github.com/camarokris/jellyfin-discord-activity/issues"
+    "url": "https://github.com/tomerh2001/jellyfin-discord-activity/issues"
   },
-  "homepage": "https://github.com/camarokris/jellyfin-discord-activity#readme",
+  "homepage": "https://github.com/tomerh2001/jellyfin-discord-activity#readme",
   "keywords": [
     "jellyfin",
     "discord",
@@ -33,7 +33,8 @@
     "test": "pnpm -r test",
     "db:migrate": "pnpm --filter @app/api db:migrate",
     "smoke": "pnpm --filter @app/api smoke",
-    "start": "node apps/api/dist/server.js"
+    "start": "node apps/api/dist/server.js",
+    "discord:register": "pnpm --filter @app/api exec tsx src/registerCommands.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

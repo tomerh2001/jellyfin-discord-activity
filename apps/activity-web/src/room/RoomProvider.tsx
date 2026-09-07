@@ -95,11 +95,15 @@ export function useRoomSync(input: UseRoomSyncInput): RoomSync {
       setStatus("disabled");
       setParticipants([]);
       setRoom(undefined);
+      setRemotePlayerEvent(undefined);
+      setRemoteStateUpdate(undefined);
       return;
     }
 
     let cancelled = false;
+    let awaitingSnapshot = true;
     const connect = () => {
+      awaitingSnapshot = true;
       setStatus("connecting");
       setError(undefined);
 
@@ -113,7 +117,7 @@ export function useRoomSync(input: UseRoomSyncInput): RoomSync {
       socketRef.current = socket;
 
       socket.addEventListener("open", () => {
-        if (cancelled) {
+        if (cancelled || socketRef.current !== socket) {
           return;
         }
 
@@ -128,11 +132,11 @@ export function useRoomSync(input: UseRoomSyncInput): RoomSync {
       });
 
       socket.addEventListener("message", (event) => {
-        handleServerMessage(event.data);
+        if (!cancelled && socketRef.current === socket) handleServerMessage(event.data);
       });
 
       socket.addEventListener("close", () => {
-        if (cancelled) {
+        if (cancelled || socketRef.current !== socket) {
           return;
         }
 
@@ -141,7 +145,7 @@ export function useRoomSync(input: UseRoomSyncInput): RoomSync {
       });
 
       socket.addEventListener("error", () => {
-        if (cancelled) {
+        if (cancelled || socketRef.current !== socket) {
           return;
         }
 
@@ -169,24 +173,49 @@ export function useRoomSync(input: UseRoomSyncInput): RoomSync {
         case "room_state":
           setError(undefined);
           setRoom(message.room);
+          if (awaitingSnapshot) {
+            awaitingSnapshot = false;
+            setRemoteStateUpdate(undefined);
+            setRemotePlayerEvent(message.room.itemId ? {
+              type: "player_event",
+              action: message.room.playState === "playing" ? "play" : "seek",
+              positionSeconds: message.room.positionSeconds + (message.room.playState === "playing"
+                ? Math.max(0, (message.serverTs - Date.parse(message.room.updatedAt)) / 1000) : 0),
+              targetServerTs: message.serverTs,
+              serverTs: message.serverTs,
+              receivedAt: Date.now()
+            } : undefined);
+          }
           return;
         case "participants_update":
           setError(undefined);
           setParticipants(message.participants);
           return;
         case "media_selected":
-          setRoom((current) => current ? {
-            ...current,
-            itemId: message.itemId,
-            ...(message.mediaSourceId ? { mediaSourceId: message.mediaSourceId } : {}),
-            title: message.title,
-            ...(message.runtimeTicks ? { runtimeTicks: message.runtimeTicks } : {}),
-            ...(message.audioStreamIndex !== undefined ? { audioStreamIndex: message.audioStreamIndex } : {}),
-            ...(message.subtitleStreamIndex !== undefined ? { subtitleStreamIndex: message.subtitleStreamIndex } : {}),
-            playState: "loading",
-            positionSeconds: 0,
-            updatedAt: new Date(message.serverTs).toISOString()
-          } : current);
+          setRemotePlayerEvent(undefined);
+          setRemoteStateUpdate(undefined);
+          setRoom((current) => {
+            if (!current) return current;
+            const {
+              mediaSourceId: _mediaSourceId,
+              runtimeTicks: _runtimeTicks,
+              audioStreamIndex: _audioStreamIndex,
+              subtitleStreamIndex: _subtitleStreamIndex,
+              ...base
+            } = current;
+            return {
+              ...base,
+              itemId: message.itemId,
+              ...(message.mediaSourceId ? { mediaSourceId: message.mediaSourceId } : {}),
+              title: message.title,
+              ...(message.runtimeTicks ? { runtimeTicks: message.runtimeTicks } : {}),
+              ...(message.audioStreamIndex !== undefined ? { audioStreamIndex: message.audioStreamIndex } : {}),
+              ...(message.subtitleStreamIndex !== undefined ? { subtitleStreamIndex: message.subtitleStreamIndex } : {}),
+              playState: "loading",
+              positionSeconds: 0,
+              updatedAt: new Date(message.serverTs).toISOString()
+            };
+          });
           return;
         case "player_event":
           setRemotePlayerEvent({

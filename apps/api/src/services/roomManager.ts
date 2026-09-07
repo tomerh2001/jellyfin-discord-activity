@@ -1,9 +1,86 @@
-import type { ClaimHostRequest, PlayState, RoomResponse, SelectMediaRequest } from "@app/shared";
+import { roomStateSchema, type ClaimHostRequest, type PlayState, type RoomResponse, type SelectMediaRequest } from "@app/shared";
+
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 export type ManagedRoom = RoomResponse["room"];
 
 export class RoomManager {
   private readonly rooms = new Map<string, ManagedRoom>();
+  private persistencePath?: string;
+  private persistenceTimer: ReturnType<typeof setTimeout> | undefined;
+
+  configurePersistence(databaseUrl: string): void {
+    const databasePath = databaseUrl.startsWith("file:") ? databaseUrl.slice(5) : databaseUrl;
+    const nextPath = path.join(path.dirname(databasePath), "rooms.json");
+    if (this.persistencePath === nextPath) return;
+    this.flushPersistence();
+    this.rooms.clear();
+    this.persistencePath = nextPath;
+    if (!existsSync(nextPath)) return;
+    const snapshots = roomStateSchema.array().parse(JSON.parse(readFileSync(nextPath, "utf8")));
+    for (const snapshot of snapshots) {
+      // Live sessions and host ownership never survive a process restart.
+      const { hostDiscordUserId: _host, ...room } = snapshot;
+      this.rooms.set(room.instanceId, {
+        ...room,
+        playState: room.itemId ? "paused" : "idle"
+      });
+    }
+  }
+
+  flushPersistence(): void {
+    if (this.persistenceTimer) clearTimeout(this.persistenceTimer);
+    this.persistenceTimer = undefined;
+    if (!this.persistencePath) return;
+    mkdirSync(path.dirname(this.persistencePath), { recursive: true });
+    const temporaryPath = `${this.persistencePath}.${process.pid}.tmp`;
+    writeFileSync(temporaryPath, `${JSON.stringify([...this.rooms.values()])}\n`, { mode: 0o600 });
+    renameSync(temporaryPath, this.persistencePath);
+  }
+
+  private persistSoon(): void {
+    if (!this.persistencePath || this.persistenceTimer) return;
+    this.persistenceTimer = setTimeout(() => {
+      try { this.flushPersistence(); }
+      catch { process.emitWarning("Unable to persist watch-party room snapshots; check the data mount."); }
+    }, 1000);
+    this.persistenceTimer.unref();
+  }
+
+  get(instanceId: string): ManagedRoom | undefined {
+    return this.rooms.get(instanceId);
+  }
+
+  findByChannel(guildId: string, channelId: string): ManagedRoom | undefined {
+    return [...this.rooms.values()]
+      .filter((room) => room.guildId === guildId && room.channelId === channelId)
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
+  }
+
+  /** Called with unique, live participants in connection order. */
+  reconcileHost(instanceId: string, connectedUserIds: string[]): ManagedRoom | undefined {
+    const room = this.rooms.get(instanceId);
+    if (!room || (room.hostDiscordUserId && connectedUserIds.includes(room.hostDiscordUserId))) return room;
+    const host = connectedUserIds[0];
+    if (!room.hostDiscordUserId && !host) return room;
+    const { hostDiscordUserId: _previousHost, ...base } = room;
+    const next: ManagedRoom = {
+      ...base,
+      ...(host ? { hostDiscordUserId: host } : {}),
+      ...(room.playState === "playing" ? {
+        playState: host ? "playing" as const : "paused" as const,
+        positionSeconds: Math.min(
+          room.runtimeTicks ? room.runtimeTicks / 10_000_000 : Number.POSITIVE_INFINITY,
+          room.positionSeconds + Math.max(0, (Date.now() - Date.parse(room.updatedAt)) / 1000)
+        )
+      } : {}),
+      updatedAt: new Date().toISOString()
+    };
+    this.rooms.set(instanceId, next);
+    this.persistSoon();
+    return next;
+  }
 
   get size(): number {
     return this.rooms.size;
@@ -17,6 +94,10 @@ export class RoomManager {
     const existing = this.rooms.get(instanceId);
 
     if (existing) {
+      if ((input?.guildId !== undefined && existing.guildId !== input.guildId)
+        || (input?.channelId !== undefined && existing.channelId !== input.channelId)) {
+        throw new RoomError("room_context_mismatch", "Room does not belong to that Discord channel.");
+      }
       return existing;
     }
 
@@ -30,6 +111,7 @@ export class RoomManager {
     };
 
     this.rooms.set(instanceId, room);
+    this.persistSoon();
     return room;
   }
 
@@ -52,6 +134,7 @@ export class RoomManager {
     };
 
     this.rooms.set(input.instanceId, next);
+    this.persistSoon();
     return next;
   }
 
@@ -85,6 +168,7 @@ export class RoomManager {
     };
 
     this.rooms.set(input.instanceId, next);
+    this.persistSoon();
     return next;
   }
 
@@ -108,6 +192,7 @@ export class RoomManager {
     };
 
     this.rooms.set(input.instanceId, next);
+    this.persistSoon();
     return next;
   }
 
@@ -137,6 +222,7 @@ export class RoomManager {
       }
     }
 
+    if (removed.length) this.persistSoon();
     return removed;
   }
 }
