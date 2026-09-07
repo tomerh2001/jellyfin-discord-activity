@@ -1,5 +1,6 @@
 # Security
 
+- Production accepts browser, API, media, and WebSocket requests only with a valid Discord Activity proxy signature. Direct requests to the origin are denied even with a spoofed Discord referrer or source-IP header.
 - Do not expose Discord client secrets or Jellyfin tokens in the browser bundle.
 - Use HTTPS/WSS in production.
 - Generate all session and token encryption secrets with at least 32 bytes of entropy.
@@ -40,3 +41,19 @@ Membership renews at most once per minute through authenticated API, WebSocket, 
 Slash and context-menu commands require exact-body Ed25519 verification, a five-minute timestamp window, the expected application ID, and an allowed caller. Duplicate interaction IDs reuse their initial response without repeating mutations. Controls verify the caller's current voice channel and Activity membership; only the connected host can change playback. Command responses are ephemeral and disable mentions.
 
 Room snapshots contain selection and playback state, never app sessions. They restore paused and without host ownership. Host departure transfers control to the first remaining connected participant; duplicate tabs do not create duplicate participants or prematurely remove a host.
+
+## Discord Activity ingress
+
+With `NODE_ENV=production`, the signed proxy gate is mandatory and cannot be disabled by setting `DISCORD_REQUIRE_PROXY_AUTH=false`. The flag enables the same gate in development/test environments. The gate uses the existing application's `DISCORD_PUBLIC_KEY`; no shared secret is sent to the frontend.
+
+Discord's [proxy authentication protocol](https://docs.discord.com/developers/activities/development-guides/multiplayer-experience#validating-proxy-request-headers) sends `X-Discord-Proxy-Payload` (base64), `X-Signature-Ed25519`, and `X-Signature-Timestamp`. The verifier checks the Ed25519 signature over the decoded payload bytes, the timestamp's exact match to `created_at`, a bounded future clock skew, and `expires_at`. Invalid encodings and payloads fail closed. Discord's JavaScript sample encodes the signature as base64 while its Python sample uses hex; this implementation strictly accepts either representation of a 64-byte signature.
+
+The published protocol signs a reusable token, **not the request method, URL, body, or a unique nonce**. A captured valid token can therefore be reused until it expires. This gate is additional protection, not proof that an HTTP client is physically inside Discord. OAuth identity, allowed server/user checks, active-instance verification, session expiry and host authorization remain required for all library and playback access. Neither CORS, referrers, client-provided instance IDs nor IP headers count as identity proof.
+
+Only exact `POST /api/discord/interactions` bypasses the proxy-token verifier, because Discord callbacks instead require the existing exact-body interaction signature. A proxy token cannot authenticate an interaction, or vice versa. Exact `GET`/`HEAD /health` is available only to the container's actual loopback TCP peer without forwarded headers; it remains inaccessible through the public proxy. `/api/health` follows normal proxy authentication.
+
+The gate runs before CORS, request-body parsing, static handling and the WebSocket handshake. Register the WebSocket plugin first so its request bookkeeping and rejected-upgrade cleanup hooks are installed; authentication still runs before the upgrade handler. A real TCP upgrade regression test covers both rejection and acceptance, including closing refused sockets cleanly.
+
+Every gated HTTP response sends `Cache-Control: private, no-store` and CDN-specific no-store headers, including frontend assets, so a shared cache cannot serve previously authorized responses without checking credentials. Keep a hostname-wide cache bypass at Cloudflare and preserve the signature headers through the tunnel/reverse proxy. Never log proxy tokens or signatures. This application does not rely on a shared Discord egress-IP allowlist.
+
+Before opening public ingress, launch the Activity through the configured Discord URL mapping and verify that real requests carry valid proxy headers; the documentation does not describe a portal toggle or promise per-request header availability for every launch context. If headers are absent, the service will deny access. Do not disable the gate to make an unverified launch work.

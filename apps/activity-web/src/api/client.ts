@@ -58,7 +58,7 @@ async function parseApiError(response: Response): Promise<Error> {
 }
 
 export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  const response = await fetch(apiUrl("/health"), signal ? { signal } : undefined);
+  const response = await fetch(apiUrl("/api/health"), signal ? { signal } : undefined);
 
   if (!response.ok) {
     throw await parseApiError(response);

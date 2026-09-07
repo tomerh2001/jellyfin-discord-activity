@@ -19,6 +19,9 @@ export const envSchema = z.object({
   DISCORD_CLIENT_ID: z.string().default("dev-client-id"),
   DISCORD_BOT_TOKEN: z.string().default(""),
   DISCORD_PUBLIC_KEY: z.string().regex(/^$|^[a-fA-F0-9]{64}$/).default(""),
+  // Production always requires signed Discord proxy traffic. Enable this only
+  // to exercise the same ingress boundary during local development/tests.
+  DISCORD_REQUIRE_PROXY_AUTH: booleanFromString.default(false),
   DISCORD_ALLOWED_GUILD_IDS: z.string().default(""),
   DISCORD_ALLOWED_USER_IDS: z.string().default(""),
   DISCORD_CLIENT_SECRET: z.string().default("dev-client-secret"),

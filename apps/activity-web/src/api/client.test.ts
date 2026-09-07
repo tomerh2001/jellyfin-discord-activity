@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getPublicConfig } from "./client.js";
+import { getHealth, getPublicConfig } from "./client.js";
 
 describe("api client config", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("boots through the gated Activity health route instead of the local container probe", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      return url.endsWith("/api/health") ? jsonResponse({ ok: true }) : jsonResponse({ error: "Forbidden" }, 401);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await getHealth(controller.signal)).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringMatching(/\/api\/health$/), { signal: controller.signal });
   });
 
   it("uses the runtime Discord client id from /api/config when no Vite override is set", async () => {

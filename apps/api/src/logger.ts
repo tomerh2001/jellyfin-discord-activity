@@ -40,6 +40,8 @@ function loggerOptions(env: AppEnv) {
       paths: [
         "req.headers.authorization",
         "req.headers.cookie",
+        "req.headers.x-discord-proxy-payload",
+        "req.headers.x-signature-ed25519",
         "res.headers.set-cookie",
         "*.password",
         "*.token",
