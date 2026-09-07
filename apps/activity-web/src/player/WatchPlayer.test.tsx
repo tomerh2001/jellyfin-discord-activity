@@ -71,6 +71,22 @@ describe("WatchPlayer", () => {
     }));
   });
 
+  it("applies server-issued seek commands to the host player", async () => {
+    vi.mocked(preparePlayback).mockResolvedValue(playbackResponse());
+    const pause = vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
+    try {
+      const { container } = renderWatchPlayer({
+        isHost: true, itemId: "movie-1", title: "Example Movie",
+        remotePlayerEvent: { type: "player_event", action: "seek", positionSeconds: 321,
+          targetServerTs: Date.now(), serverTs: Date.now(), receivedAt: Date.now() }
+      });
+      await waitFor(() => {
+        expect(container.querySelector("video")?.currentTime).toBe(321);
+        expect(pause).toHaveBeenCalled();
+      });
+    } finally { pause.mockRestore(); }
+  });
+
   it("falls back to a direct MP4 prepare when HLS fails in the client", async () => {
     const preparePlaybackMock = vi.mocked(preparePlayback);
     const attachVideoSourceMock = vi.mocked(attachVideoSource);

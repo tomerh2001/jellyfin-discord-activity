@@ -1,5 +1,5 @@
 import type { Participant, ServerMessage } from "@app/shared/protocol";
-import type { AppSession } from "../services/sessionStore.js";
+import { sessionStore, type AppSession } from "../services/sessionStore.js";
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -29,11 +29,11 @@ export class RoomSocketHub {
     this.rooms.set(client.instanceId, room);
   }
 
-  remove(client: Pick<RoomSocket, "instanceId" | "clientId">): void {
+  remove(client: Pick<RoomSocket, "instanceId" | "clientId">): boolean {
     const room = this.rooms.get(client.instanceId);
 
-    if (!room) {
-      return;
+    if (!room || !room.has(client.clientId)) {
+      return false;
     }
 
     room.delete(client.clientId);
@@ -41,10 +41,26 @@ export class RoomSocketHub {
     if (room.size === 0) {
       this.rooms.delete(client.instanceId);
     }
+    return true;
   }
 
   roomSize(instanceId: string): number {
     return this.rooms.get(instanceId)?.size ?? 0;
+  }
+
+  clients(instanceId?: string): RoomSocket[] {
+    if (instanceId) return [...(this.rooms.get(instanceId)?.values() ?? [])];
+    return [...this.rooms.values()].flatMap((room) => [...room.values()]);
+  }
+
+  hasUser(instanceId: string, userId: string): boolean {
+    return this.clients(instanceId).some((client) => client.session.discordUserId === userId);
+  }
+
+  connectedUserIds(instanceId: string): string[] {
+    return [...new Set(this.clients(instanceId)
+      .filter((client) => client.socket.readyState === 1 && sessionStore.getSession(client.session.id))
+      .map((client) => client.session.discordUserId))];
   }
 
   activeInstanceIds(): string[] {
@@ -52,7 +68,11 @@ export class RoomSocketHub {
   }
 
   participants(instanceId: string, hostDiscordUserId?: string): Participant[] {
-    return Array.from(this.rooms.get(instanceId)?.values() ?? []).map((client) => ({
+    const uniqueClients = new Map<string, RoomSocket>();
+    for (const client of this.clients(instanceId)) {
+      if (!uniqueClients.has(client.session.discordUserId)) uniqueClients.set(client.session.discordUserId, client);
+    }
+    return [...uniqueClients.values()].map((client) => ({
       discordUserId: client.session.discordUserId,
       username: client.username,
       ...(client.avatar !== undefined ? { avatar: client.avatar } : {}),
@@ -62,14 +82,14 @@ export class RoomSocketHub {
   }
 
   send(client: RoomSocket, message: ServerMessage): void {
-    if (client.socket.readyState === 1) {
+    if (client.socket.readyState === 1 && sessionStore.getSession(client.session.id)) {
       client.socket.send(JSON.stringify(message));
     }
   }
 
-  broadcast(instanceId: string, message: ServerMessage): void {
+  broadcast(instanceId: string, message: ServerMessage, excludeClientId?: string): void {
     for (const client of this.rooms.get(instanceId)?.values() ?? []) {
-      this.send(client, message);
+      if (client.clientId !== excludeClientId) this.send(client, message);
     }
   }
 

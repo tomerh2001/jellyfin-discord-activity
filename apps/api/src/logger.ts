@@ -90,9 +90,10 @@ export function redactUrl(url: string | undefined): string | undefined {
   }
 
   const query = parsed.searchParams.toString();
-  return `${parsed.pathname}${query ? `?${query}` : ""}`;
+  const pathname = parsed.pathname.replace(/^(\/media\/(?:hls|direct)\/)[^/]+/, "$1[redacted]");
+  return `${pathname}${query ? `?${query}` : ""}`;
 }
 
 function isSensitiveQueryKey(key: string): boolean {
-  return ["token", "code", "access_token", "refresh_token", "client_secret"].includes(key.toLowerCase());
+  return ["token", "code", "api_key", "apikey", "u", "access_token", "refresh_token", "client_secret"].includes(key.toLowerCase());
 }

@@ -177,6 +177,7 @@ export function WatchPlayer({
   const initialMethod = playbackLadder[0] ?? "hls";
   const activeStageRef = useRef<PreferredPlayMethod>(initialMethod);
   const suppressEventsUntilRef = useRef(0);
+  const appliedRemoteEventRef = useRef<RemotePlayerEvent | undefined>(undefined);
   const progressiveBufferingRef = useRef(false);
   const renewInFlightRef = useRef(false);
   const loggedPlaySuccessRef = useRef(false);
@@ -339,7 +340,7 @@ export function WatchPlayer({
   }, [appToken, canPrepare, isHost, stagedMedia]);
 
   useEffect(() => {
-    if (isHost || playerState.status !== "ready" || !remotePlayerEvent || !videoRef.current) {
+    if (playerState.status !== "ready" || !remotePlayerEvent || !videoRef.current || appliedRemoteEventRef.current === remotePlayerEvent) {
       return;
     }
 
@@ -356,13 +357,16 @@ export function WatchPlayer({
       }
 
       suppressEventsUntilRef.current = Date.now() + 2000;
-      void applyRemotePlayerEvent(video, remotePlayerEvent).catch(() => {
+      appliedRemoteEventRef.current = remotePlayerEvent;
+      const lateBySeconds = remotePlayerEvent.action === "play"
+        ? Math.max(0, (Date.now() + clockOffsetMs - remotePlayerEvent.targetServerTs) / 1000) : 0;
+      void applyRemotePlayerEvent(video, { ...remotePlayerEvent, positionSeconds: remotePlayerEvent.positionSeconds + lateBySeconds }).catch(() => {
         setPlayerNotice("Press play once to join host playback.");
       });
     }, delayMs);
 
     return () => window.clearTimeout(timeout);
-  }, [clockOffsetMs, isHost, playerState.status, remotePlayerEvent]);
+  }, [clockOffsetMs, playerState.status, remotePlayerEvent]);
 
   useEffect(() => {
     if (!appToken || !canPrepare || !itemId || !videoRef.current) {
@@ -591,7 +595,7 @@ export function WatchPlayer({
     const interval = window.setInterval(() => {
       const video = videoRef.current;
 
-      if (!video || video.ended) {
+      if (!video || video.ended || Date.now() < suppressEventsUntilRef.current) {
         return;
       }
 

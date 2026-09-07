@@ -1,6 +1,9 @@
 import type { ServerMessage } from "@app/shared/protocol";
 import { clientMessageSchema } from "@app/shared/protocol";
 import { z } from "zod";
+import { AuthError, requireRoomContext } from "../plugins/auth.js";
+import { sessionStore } from "../services/sessionStore.js";
+import { allowedDiscordActor } from "../services/discord.js";
 import type { AppEnv } from "../env.js";
 import { roomManager, RoomError } from "../services/roomManager.js";
 import { playStateForAction, targetServerTimestamp } from "../services/syncEngine.js";
@@ -8,6 +11,7 @@ import type { ClientMessage } from "./messages.js";
 import { roomSocketHub, type RoomSocket } from "./roomSocket.js";
 
 export function handleRawMessage(env: AppEnv, client: RoomSocket, raw: unknown): void {
+  if (!validateSocketSession(env, client)) return;
   const parsedJson = parseJson(raw);
 
   if (!parsedJson.ok) {
@@ -27,12 +31,12 @@ export function handleRawMessage(env: AppEnv, client: RoomSocket, raw: unknown):
 
 export function handleClientMessage(env: AppEnv, client: RoomSocket, message: ClientMessage): void {
   try {
+    if (!validateSocketSession(env, client)) return;
+    requireRoomContext(client.session, { instanceId: client.instanceId });
     switch (message.type) {
       case "hello": {
-        roomManager.getOrCreate(message.instanceId, {
-          ...(message.guildId ? { guildId: message.guildId } : {}),
-          ...(message.channelId ? { channelId: message.channelId } : {})
-        });
+        const context = requireRoomContext(client.session, message);
+        roomManager.getOrCreate(client.instanceId, context);
         sendRoomSnapshot(client);
         return;
       }
@@ -84,7 +88,7 @@ export function handleClientMessage(env: AppEnv, client: RoomSocket, message: Cl
           positionSeconds: message.positionSeconds,
           targetServerTs: targetServerTimestamp(message.action, now),
           serverTs: now
-        });
+        }, client.clientId);
         roomSocketHub.broadcast(client.instanceId, {
           type: "room_state",
           room,
@@ -122,7 +126,7 @@ export function handleClientMessage(env: AppEnv, client: RoomSocket, message: Cl
         return;
     }
   } catch (error) {
-    if (error instanceof RoomError) {
+    if (error instanceof RoomError || error instanceof AuthError) {
       sendError(client, error.code, error.publicMessage);
       return;
     }
@@ -185,4 +189,33 @@ function parseJson(raw: unknown): { ok: true; value: unknown } | { ok: false } {
   } catch {
     return { ok: false };
   }
+}
+
+export function validateSocketSession(env: AppEnv, client: RoomSocket): boolean {
+  const session = sessionStore.getSession(client.session.id);
+  if (session && session.discordUserId === client.session.discordUserId
+    && allowedDiscordActor(env, session.discordUserId, session.discordContext?.guildId)) return true;
+  disconnectClient(client);
+  client.socket.close(1008, "invalid_app_token");
+  return false;
+}
+
+export function disconnectClient(client: RoomSocket): void {
+  if (!roomSocketHub.remove(client)) return;
+  reconcileRoomHost(client.instanceId);
+}
+
+export function reconcileRoomHost(instanceId: string): void {
+  const previousHost = roomManager.get(instanceId)?.hostDiscordUserId;
+  const room = roomManager.reconcileHost(instanceId, roomSocketHub.connectedUserIds(instanceId));
+  if (!room) return;
+  if (previousHost !== room.hostDiscordUserId) {
+    broadcastRoomState(instanceId);
+    if (room.hostDiscordUserId) {
+      roomSocketHub.broadcast(instanceId, {
+        type: "host_changed", hostDiscordUserId: room.hostDiscordUserId, serverTs: Date.now()
+      });
+    }
+  }
+  broadcastParticipants(instanceId);
 }

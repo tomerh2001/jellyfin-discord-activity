@@ -30,7 +30,7 @@ export const staticFrontendPlugin: FastifyPluginAsync = async (app) => {
   });
 
   app.setNotFoundHandler(async (request, reply) => {
-    if (request.method === "GET" && !request.url.startsWith("/api") && !request.url.startsWith("/ws")) {
+    if (request.method === "GET" && !request.url.startsWith("/api") && !request.url.startsWith("/ws") && !request.url.startsWith("/media")) {
       return reply.sendFile("index.html");
     }
 

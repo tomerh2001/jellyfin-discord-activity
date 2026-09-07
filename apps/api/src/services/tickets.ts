@@ -1,6 +1,8 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { sessionStore } from "./sessionStore.js";
 
 export type StreamTicketPayload = {
+  appSessionId: string;
   serverUrl: string;
   jellyfinUserId: string;
   encryptedAccessToken: string;
@@ -16,6 +18,8 @@ export type StreamTicket = StreamTicketPayload & {
   secretHash: string;
   expiresAt: Date;
   ttlSeconds: number;
+  assets: Map<string, string>;
+  assetIds: Map<string, string>;
 };
 
 export class StreamTicketStore {
@@ -34,7 +38,9 @@ export class StreamTicketStore {
       id,
       secretHash: hashSecret(secret),
       expiresAt: new Date(Math.min(requestedExpiry, sessionCap)),
-      ttlSeconds
+      ttlSeconds,
+      assets: new Map(),
+      assetIds: new Map()
     };
 
     this.tickets.set(id, ticket);
@@ -46,9 +52,9 @@ export class StreamTicketStore {
   }
 
   get(token: string, options?: { slide?: boolean }): StreamTicket | undefined {
-    const [id, secret] = token.split(".");
+    const [id, secret, extra] = token.split(".");
 
-    if (!id || !secret) {
+    if (!id || !secret || extra !== undefined) {
       return undefined;
     }
 
@@ -60,12 +66,12 @@ export class StreamTicketStore {
 
     const now = Date.now();
 
-    if (ticket.expiresAt.getTime() <= now || ticket.sessionExpiresAt.getTime() <= now) {
+    if (ticket.expiresAt.getTime() <= now || !this.sessionIsActive(ticket)) {
       this.tickets.delete(id);
       return undefined;
     }
 
-    if (ticket.secretHash !== hashSecret(secret)) {
+    if (!timingSafeEqual(Buffer.from(ticket.secretHash), Buffer.from(hashSecret(secret)))) {
       return undefined;
     }
 
@@ -74,6 +80,22 @@ export class StreamTicketStore {
     }
 
     return ticket;
+  }
+
+  sessionIsActive(ticket: StreamTicket): boolean {
+    return ticket.sessionExpiresAt.getTime() > Date.now() && Boolean(sessionStore.getSession(ticket.appSessionId));
+  }
+
+  // Only the server manifest rewriter can mint an asset ID. Clients never provide
+  // an upstream path or query, and IDs from another ticket do not authorize reads.
+  issueAsset(ticket: StreamTicket, target: string): string {
+    const existing = ticket.assetIds.get(target);
+    if (existing) return existing;
+    if (ticket.assets.size >= 20_000) throw new Error("stream_asset_limit");
+    const id = randomBytes(18).toString("base64url");
+    ticket.assets.set(id, target);
+    ticket.assetIds.set(target, id);
+    return id;
   }
 
   clear(): void {
@@ -93,7 +115,7 @@ export class StreamTicketStore {
     const now = Date.now();
 
     for (const [id, ticket] of this.tickets) {
-      if (ticket.expiresAt.getTime() <= now || ticket.sessionExpiresAt.getTime() <= now) {
+      if (ticket.expiresAt.getTime() <= now || !this.sessionIsActive(ticket)) {
         this.tickets.delete(id);
       }
     }

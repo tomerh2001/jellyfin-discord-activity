@@ -7,7 +7,7 @@ import {
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { createAppSession, getBearerToken, verifyAppToken } from "../services/appSession.js";
-import { DiscordOAuthError, exchangeDiscordCode, getDiscordCurrentUser } from "../services/discord.js";
+import { DiscordActivityError, DiscordOAuthError, allowedDiscordActor, exchangeDiscordCode, getDiscordCurrentUser, verifyDiscordActivityContext } from "../services/discord.js";
 import { sessionStore } from "../services/sessionStore.js";
 import { AuthError, getAppSessionUser, requireAppSession, sendAuthError } from "../plugins/auth.js";
 import { JellyfinAccountStore } from "../services/jellyfinAccountStore.js";
@@ -27,7 +27,10 @@ export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
     };
 
     try {
-      const shouldMock = app.envConfig.DEV_AUTH_MOCK;
+      const shouldMock = app.envConfig.DEV_AUTH_MOCK && app.envConfig.NODE_ENV !== "production";
+      if (parsed.data.redirectUri && parsed.data.redirectUri !== app.envConfig.DISCORD_REDIRECT_URI) {
+        return reply.code(400).send(apiError("invalid_redirect_uri", "Unrecognized OAuth redirect URI."));
+      }
       const tokenResult = shouldMock
         ? {
             accessToken: `dev-discord-token-${Date.now()}`,
@@ -44,10 +47,16 @@ export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
           }
         : await getDiscordCurrentUser(tokenResult.accessToken);
 
+      const verifiedContext = shouldMock
+        ? discordContext
+        : await verifyDiscordActivityContext(app.envConfig, discordContext, user.id);
+      if (!allowedDiscordActor(app.envConfig, user.id, verifiedContext.guildId)) {
+        throw new DiscordActivityError("discord_actor_forbidden", 403);
+      }
       const { appToken, session } = await createAppSession({
         env: app.envConfig,
         user,
-        discordContext
+        discordContext: verifiedContext
       });
 
       return reply.send({
@@ -59,6 +68,9 @@ export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
     } catch (error) {
       request.log.warn({ err: error }, "Discord exchange failed");
 
+      if (error instanceof DiscordActivityError) {
+        return reply.code(error.statusCode).send(apiError(error.code, "This Discord Activity is unavailable or access is not permitted."));
+      }
       if (error instanceof DiscordOAuthError) {
         return reply.code(502).send(apiError(error.code, "Discord authentication failed."));
       }

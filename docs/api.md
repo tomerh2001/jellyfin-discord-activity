@@ -452,7 +452,7 @@ Body:
 }
 ```
 
-`preferredPlayMethod` is optional and accepts `hls` or `direct`. Omit it for automatic selection (remux/direct when Jellyfin reports browser-safe DirectPlay/DirectStream; otherwise HLS). The frontend uses `direct` as a per-client compatibility fallback after HLS fails, and may start with `direct` on known-bad clients such as Linux Discord.
+`preferredPlayMethod` is optional and accepts `hls`, `direct`, or `webm`. Omit it for automatic selection (direct when Jellyfin reports browser-safe playback and no explicit track selection requires transcoding; otherwise HLS). `direct` requests an H.264/AAC MP4 compatibility transcode; `webm` requests a bounded 480p VP8/Opus transcode for clients without H.264 support. Explicit audio selection and enabled subtitles require a stream that applies the selection. Selected subtitles are burned into the video, including ASS/SSA styles; the Jellyfin account must permit transcoding. Unknown track indexes return `400`.
 
 `maxStreamingBitrate` can override the deployment bitrate cap for a single prepare request. Transcode resolution is controlled by deployment settings: `STREAM_MAX_WIDTH` and `STREAM_MAX_HEIGHT`.
 
@@ -473,7 +473,7 @@ The backend calls Jellyfin `PlaybackInfo` using the active Jellyfin account for 
 }
 ```
 
-The Jellyfin access token is never returned to the browser. The opaque stream ticket expires according to `STREAM_TICKET_TTL_SECONDS` and is rejected when the app session that created it has expired.
+The Jellyfin access token is never returned to the browser. The opaque stream ticket expires according to `STREAM_TICKET_TTL_SECONDS` and is rejected when the app session that created it has expired or been revoked (for example, on logout).
 
 ## Media Proxy
 
@@ -481,10 +481,10 @@ Media proxy routes use the stream ticket from `POST /api/playback/prepare`. They
 
 ```text
 GET /media/hls/:ticket/master.m3u8
-GET /media/hls/:ticket/asset?u=/Videos/...
+GET /media/hls/:ticket/asset?a=opaque_server_issued_asset_id
 ```
 
-The HLS master route fetches the Jellyfin playlist server-side and rewrites playlist entries so segments, child playlists, and URI attributes point back through `/media/hls/:ticket/asset`. Rewritten playlists must not expose the Jellyfin access token.
+The HLS master route fetches the Jellyfin playlist server-side and rewrites segments, child playlists, initialization maps, and key URI attributes to ticket-scoped opaque asset IDs. Only URLs actually issued by a fetched manifest are authorized. Client-supplied upstream paths, changed query parameters, and asset IDs from another ticket are rejected. Upstream URLs and Jellyfin credentials remain on the backend; upstream redirects are rejected and upstream error bodies are not forwarded. All media responses use `Cache-Control: no-store`.
 
 If the ticket is invalid or expired, media routes return:
 
@@ -498,7 +498,10 @@ If the ticket is invalid or expired, media routes return:
 ```
 
 ```text
-GET /media/direct/:ticket/stream
+GET /media/direct/:ticket/stream.mp4
+GET /media/direct/:ticket/stream.webm
 ```
 
 Direct mode proxies Jellyfin stream bytes and forwards the browser's `Range` header. It is used when `STREAM_PROXY_MODE=direct`, as a direct-stream path for supported media sources, and as the per-client MP4 compatibility fallback when `POST /api/playback/prepare` receives `preferredPlayMethod=direct`.
+
+Media transfers stop on client disconnect, app logout, or session expiry. Upstream headers have a 30-second deadline; body transfers have a 60-second idle deadline and a six-hour absolute cap. HLS manifests are limited to 2 MiB, with at most 20,000 issued asset references per ticket. Active transfers do not extend the app session.

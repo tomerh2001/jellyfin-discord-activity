@@ -1,227 +1,70 @@
 # Jellyfin Discord Activity
 
-Self-hosted [Discord Activity](https://discord.com/developers/docs/activities/overview) for **Jellyfin watch parties**.
+A self-hosted Discord Activity for watching Jellyfin movies and episodes together in a voice channel. Each participant opens the shared player; playback follows the room host.
 
-Launch it from a voice channel, browse your Jellyfin library, and watch movies/episodes in sync—similar in spirit to Discord’s YouTube co-watch activity, but backed by your own media server.
+This MIT-licensed fork of [camarokris/jellyfin-discord-activity](https://github.com/camarokris/jellyfin-discord-activity) adds Discord commands, verified room access, safer media delivery, and container publishing.
 
-## Features
+## What it does
 
-- Discord Embedded App SDK boot + OAuth (short-lived app sessions)
-- Per-user Jellyfin account linking **or** one shared Jellyfin account for trusted homes
-- Library browse/search, artwork proxy, host media selection
-- Playback via backend media proxy (browser never sees Jellyfin tokens)
-  - Remux / **fMP4 HLS** when the client supports it (Windows Discord, web)
-  - **Linux Discord** falls back to progressive **VP8/Opus WebM** (H.264 is rejected by that client)
-- Host-authoritative WebSocket sync (play / pause / seek / drift correction)
-- Docker Compose deployment, host-mapped logs, smoke tests
+- Browse and search Jellyfin movies, shows, seasons, and episodes inside Discord.
+- Share play, pause, seek, audio, and subtitle selections through a host-controlled room.
+- Launch with `/watch` or right-click a user/message → **Apps → Watch Jellyfin**.
+- Use `/jellyfin play`, `pause`, `resume`, `seek`, `stop`, and `now` from Discord.
+- Connect each viewer's Jellyfin account, or use one dedicated account limited to selected libraries.
+- Verify Activity membership with Discord's Bot API, renew it periodically, and restrict access by server/user allowlists.
+- Hand host control to a remaining connected participant when the host leaves. Restore room snapshots paused after a restart; viewers authenticate again.
 
-## Architecture
+The backend serves the React player, API, WebSocket synchronization, and ticketed media proxy from one HTTPS origin. Jellyfin stays reachable only from the backend. Each viewer receives a separate stream, so bandwidth and transcoding demand increase with the number of viewers.
 
-One public HTTPS origin serves everything Discord needs:
+## Deploy
 
-```text
-/          Built React Activity UI
-/api       REST API
-/ws        Authenticated WebSocket sync
-/media     Short-lived Jellyfin stream proxy
-```
+The default branch publishes `ghcr.io/tomerh2001/jellyfin-discord-activity:latest` after build, type checks, lint, and tests pass.
 
-```text
-Discord voice channel
-  └─ Activity iframe (your HTTPS host)
-       ├─ React frontend + hls.js
-       └─ Fastify backend
-            ├─ Discord OAuth exchange
-            ├─ Jellyfin API (server-side)
-            ├─ Stream tickets + HLS/WebM/MP4 proxy
-            └─ Room sync over WebSocket
-```
+1. Copy `.env.example` to `.env` and fill in the production values. Configure a Discord bot token, OAuth client secret, public key, and at least one server/user allowlist.
+2. Follow [Discord setup](docs/discord-setup.md) for Activities, URL mappings, commands, and installation.
+3. Follow [deployment](docs/deployment.md) for persistent storage, secrets, HTTPS routing, and validation.
+4. Run `docker compose pull && docker compose up -d`.
 
-Jellyfin does **not** need to be public. Only this app must be reachable by Discord over HTTPS; the container talks to Jellyfin on your LAN.
+Production startup rejects mock authentication, placeholder credentials, weak app keys, missing allowlists, and custom Jellyfin servers. Backend secrets support `*_FILE` settings for Docker secrets. Do not configure both a secret and its file setting.
 
-## Requirements
+## Use in a call
 
-| Component | Notes |
-|-----------|--------|
-| Docker + Compose v2 | Recommended production path |
-| Public HTTPS hostname | Discord Activities require HTTPS |
-| Reverse proxy | Nginx Proxy Manager, Caddy, Nginx, Traefik, etc. with **WebSocket** support |
-| Discord application | Activities enabled + URL mappings |
-| Jellyfin | Reachable from the **app container** (not necessarily from the internet) |
-| Node 22 + pnpm | Only for local dev / running tests on the host |
+Join the voice channel, run `/watch` in its chat, and authenticate in the Activity. The first connected participant becomes host. Choose a movie or episode, prepare playback, and press Play when everyone has joined. Discord/browser autoplay rules may require each viewer to click the player once.
 
-## Quick start (Docker)
+| Command | Behavior |
+| --- | --- |
+| `/watch` | Open the Activity in the channel where invoked |
+| Apps → Watch Jellyfin | Open the Activity from a user or message context menu |
+| `/jellyfin play query:...` | Search movies/episodes; select from matching results |
+| `/jellyfin pause` / `resume` | Pause or continue the host's current video |
+| `/jellyfin seek seconds:...` | Move to the requested position and pause |
+| `/jellyfin stop` | Pause and return to the beginning |
+| `/jellyfin now` | Show the current title, state, and position |
 
-### 1. Clone and configure
-
-```bash
-git clone https://github.com/camarokris/jellyfin-discord-activity.git
-cd jellyfin-discord-activity
-cp .env.example .env
-```
-
-Generate secrets:
-
-```bash
-openssl rand -base64 32   # APP_SESSION_SECRET
-openssl rand -base64 32   # TOKEN_ENCRYPTION_KEY
-```
-
-### 2. Edit `.env` (minimum)
-
-Replace `watch.example.com` with your public hostname:
-
-```bash
-PUBLIC_BASE_URL=https://watch.example.com
-PUBLIC_WS_URL=wss://watch.example.com/ws
-ALLOWED_ORIGINS=https://watch.example.com
-DISCORD_REDIRECT_URI=https://watch.example.com/api/discord/callback
-
-PUBLIC_DISCORD_CLIENT_ID=your_discord_application_id
-DISCORD_CLIENT_ID=your_discord_application_id
-DISCORD_CLIENT_SECRET=your_discord_client_secret
-
-APP_SESSION_SECRET=paste_generated_secret
-TOKEN_ENCRYPTION_KEY=paste_generated_base64_key
-
-JELLYFIN_DEFAULT_SERVER_URL=http://192.168.1.10:8096
-JELLYFIN_AUTH_MODE=per-user   # or shared
-
-TRUST_PROXY=true
-DEV_AUTH_MOCK=false
-NODE_ENV=production
-PORT=3000
-```
-
-**Shared mode** (one Jellyfin user for everyone):
-
-```bash
-JELLYFIN_AUTH_MODE=shared
-JELLYFIN_SHARED_USERNAME=discord-watch
-JELLYFIN_SHARED_PASSWORD=strong_password
-```
-
-Use a dedicated, non-admin Jellyfin user limited to the libraries you want in Discord.
-
-### 3. Discord Developer Portal
-
-Follow **[docs/discord-setup.md](docs/discord-setup.md)** in full. Short version:
-
-1. Create an application → copy Application ID and Client Secret into `.env`.
-2. Enable **Activities**.
-3. OAuth2 redirect: `https://watch.example.com/api/discord/callback`
-4. Activity **URL Mapping** (target **without** `https://`):
-
-   | PREFIX | TARGET |
-   |--------|--------|
-   | `/` | `watch.example.com` |
-
-   Optional explicit prefixes: `/api`, `/ws`, `/media`, `/assets` → same host.
-
-5. Install the app to your test server if required by your Discord client.
-
-### 4. Reverse proxy
-
-Point `https://watch.example.com` → `http://<docker-host>:3000` with:
-
-- Valid TLS certificate  
-- **WebSockets enabled**  
-- No path stripping for `/api`, `/ws`, `/media`, `/assets`  
-- Prefer not logging full query strings (`/ws?token=...`)
-
-See **[docs/deployment.md](docs/deployment.md)** for Nginx Proxy Manager and Caddy examples.
-
-### 5. Start
-
-```bash
-docker compose up --build -d
-curl -sS http://localhost:3000/health
-# expect: {"ok":true}
-curl -sS https://watch.example.com/health
-```
-
-Logs on the host:
-
-```bash
-./scripts/tail-logs.sh app
-# or
-tail -f logs/app/app.log
-```
-
-### 6. Test in Discord
-
-1. Join a voice channel → launch the Activity.  
-2. Authenticate with Discord.  
-3. Link Jellyfin (per-user) or confirm shared mode.  
-4. Claim host → browse → prepare playback.  
-5. Second user joins; confirm sync (play/pause/seek).  
-6. Confirm media URLs are `/media/...` on your domain, not raw Jellyfin URLs.
-
-## Client notes
-
-| Client | Playback path |
-|--------|----------------|
-| Windows Discord / Discord Web | Remux when possible, else fMP4 HLS (H.264/AAC) |
-| **Linux Discord** | Progressive **VP8/Opus WebM** (~480p). H.264 is rejected by that Electron build. Prefer Windows/Web hosts for multi-person parties. |
-
-Open **Show diagnostics** under the player if something fails; combine with `logs/app/app.log`.
-
-## Documentation
-
-| Doc | Contents |
-|-----|----------|
-| [docs/deployment.md](docs/deployment.md) | Topology, env, proxy, compose, ops |
-| [docs/discord-setup.md](docs/discord-setup.md) | Developer Portal, OAuth, URL mappings, checklist |
-| [docs/jellyfin-setup.md](docs/jellyfin-setup.md) | Auth modes, linking, playback, images |
-| [docs/api.md](docs/api.md) | HTTP/WebSocket API reference |
-| [docs/security.md](docs/security.md) | Secrets, tokens, logging redaction |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Health, proxy, WS, playback, Linux |
-| [logs/README.md](logs/README.md) | Host log layout |
-| [plan.md](plan.md) | Original design notes (historical) |
+Playback commands use the caller's current voice channel. The caller must be in that channel's Activity; changes require its connected host. `/jellyfin play` selects a video; press Play in the Activity after preparing it.
 
 ## Development
 
+Use Node 24 and the pinned pnpm version through Corepack:
+
 ```bash
 corepack enable
-pnpm install
-cp .env.example .env
-# set DEV_AUTH_MOCK=true and VITE_DEV_DISCORD_MOCK as needed
-pnpm dev
-```
-
-- API: `http://localhost:3000`  
-- Vite UI: `http://localhost:5173` (proxies `/api`, `/media`, `/ws`)
-
-```bash
-pnpm lint
-pnpm typecheck
-pnpm test
+pnpm install --frozen-lockfile
 pnpm build
-pnpm smoke          # needs running app; use DEV_AUTH_MOCK=true carefully
+pnpm typecheck
+pnpm lint
+pnpm test
 ```
 
-Dev compose: `docker compose -f docker-compose.dev.yml up`.
+For local UI development, set `NODE_ENV=development`, `DEV_AUTH_MOCK=true`, and `VITE_DEV_DISCORD_MOCK=true` only in your isolated development environment, then run `pnpm dev`. The built production player never enables mock mode.
 
-## Security checklist
+## Documentation
 
-- Never commit `.env`, `data/`, or `logs/**/*.log`
-- `DEV_AUTH_MOCK=false` in production
-- Generate unique `APP_SESSION_SECRET` and `TOKEN_ENCRYPTION_KEY`
-- Do not put `DISCORD_CLIENT_SECRET` or Jellyfin tokens in frontend env (`VITE_*`)
-- Prefer per-user Jellyfin linking; shared mode is for trusted private servers only
-- Keep stream tickets and app sessions short-lived; use HTTPS/WSS
+- [Discord setup and installation](docs/discord-setup.md)
+- [Deployment and upgrades](docs/deployment.md)
+- [Jellyfin configuration](docs/jellyfin-setup.md)
+- [API and WebSocket protocol](docs/api.md)
+- [Security](docs/security.md)
+- [Playback troubleshooting](docs/troubleshooting.md)
 
-## Project layout
-
-```text
-apps/activity-web/   React + Vite Activity UI
-apps/api/            Fastify API, WS, media proxy
-packages/shared/     Shared Zod schemas / protocol
-docs/                Operator documentation
-scripts/             smoke-test, tail-logs, secrets helper
-docker-compose.yml   Production app (+ optional Caddy profile)
-```
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Upstream design notes in `plan.md` describe the original implementation and are historical.

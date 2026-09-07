@@ -6,4 +6,8 @@ describe("logger redaction", () => {
     expect(redactUrl("/ws?token=secret-token&instanceId=room-1")).toBe("/ws?token=%5Bredacted%5D&instanceId=room-1");
     expect(redactUrl("/api/discord/callback?code=oauth-code")).toBe("/api/discord/callback?code=%5Bredacted%5D");
   });
+  it("redacts media bearer tickets and Jellyfin credentials", () => {
+    expect(redactUrl("/media/hls/secret/master.m3u8?api_key=jellyfin")).toBe("/media/hls/[redacted]/master.m3u8?api_key=%5Bredacted%5D");
+    expect(redactUrl("/media/direct/secret/stream.mp4")).toBe("/media/direct/[redacted]/stream.mp4");
+  });
 });

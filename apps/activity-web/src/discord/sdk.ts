@@ -96,7 +96,7 @@ export async function authorizeDiscord(context: ActivityDiscordContext, config: 
     response_type: "code",
     state: context.instanceId,
     prompt: "none",
-    scope: ["identify", "guilds"]
+    scope: ["identify"]
   });
 
   return { code };

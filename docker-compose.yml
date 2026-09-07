@@ -1,15 +1,14 @@
 services:
   app:
-    build: .
+    image: ghcr.io/tomerh2001/jellyfin-discord-activity:latest
     container_name: jellyfin-discord-activity
     env_file: .env
     environment:
       # Writable log directory inside the container (host: ./logs/app)
-      LOG_DIR: /logs
+      LOG_DIR: /data/logs
     restart: unless-stopped
     volumes:
-      - ./data:/data
-      - ./logs/app:/logs
+      - app_data:/data
     ports:
       - "3000:3000"
     logging:
@@ -48,5 +47,6 @@ networks:
   internal:
 
 volumes:
+  app_data:
   caddy_data:
   caddy_config:

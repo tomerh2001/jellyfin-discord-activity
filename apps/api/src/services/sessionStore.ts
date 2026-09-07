@@ -10,6 +10,7 @@ export type AppSession = {
 
 export class SessionStore {
   private readonly users = new Map<string, DiscordUser>();
+  private readonly revokeListeners = new Set<(sessionId: string) => void>();
   private readonly sessions = new Map<string, AppSession>();
 
   upsertUser(user: DiscordUser): DiscordUser {
@@ -53,7 +54,7 @@ export class SessionStore {
     }
 
     if (session.expiresAt.getTime() <= Date.now()) {
-      this.sessions.delete(id);
+      this.deleteSession(id);
       return undefined;
     }
 
@@ -61,7 +62,14 @@ export class SessionStore {
   }
 
   deleteSession(id: string): void {
-    this.sessions.delete(id);
+    if (this.sessions.delete(id)) {
+      for (const listener of this.revokeListeners) listener(id);
+    }
+  }
+
+  onRevoke(listener: (sessionId: string) => void): () => void {
+    this.revokeListeners.add(listener);
+    return () => this.revokeListeners.delete(listener);
   }
 }
 
