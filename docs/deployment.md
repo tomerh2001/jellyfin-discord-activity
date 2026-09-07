@@ -50,3 +50,12 @@ Complete [Discord setup](discord-setup.md), register commands, and test the same
 Application changes go through a source branch, reviewed pull request, merge to `main`, and successful CI image publication. Pull the moving `latest` tag and recreate the container. Record the deployed OCI revision/digest when diagnosing changes. Do not deploy live source bind mounts or permanent locally built patches.
 
 The home-server provisioning input is [deploy/service-spec.yaml](../deploy/service-spec.yaml). Its generated operational Compose and environment files live in the host's Stacks repository; runtime credentials live in 1Password and the service's data dataset.
+
+After filling the reserved Discord fields in **Home Server → Jellyfin Discord Activity**, check and synchronize the existing home-server configuration with:
+
+```bash
+python3 deploy/configure-home-server.py --check
+python3 deploy/configure-home-server.py --apply
+```
+
+The helper resolves secrets without printing them, validates all required fields before writing, preserves the private TrueNAS ACL, and updates public IDs in the stack's `.env`. It does not start the service, edit ingress, or change Authentik policy.
