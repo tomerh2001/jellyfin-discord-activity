@@ -2,6 +2,7 @@ import { apiError } from "@app/shared";
 import Fastify from "fastify";
 import { loadEnv, type AppEnv } from "./env.js";
 import { loggerConfig } from "./logger.js";
+import { discordProxyPlugin } from "./plugins/discordProxy.js";
 import { roomCleanupPlugin } from "./plugins/roomCleanup.js";
 import { securityPlugin } from "./plugins/security.js";
 import { staticFrontendPlugin } from "./plugins/static.js";
@@ -45,8 +46,9 @@ export async function buildApp(env: AppEnv = loadEnv()) {
     return reply.code(500).send(apiError("internal_error", "Internal server error."));
   });
 
-  await app.register(securityPlugin(env));
   await app.register(websocketPlugin);
+  await app.register(discordProxyPlugin(env));
+  await app.register(securityPlugin(env));
   await app.register(healthRoutes);
   await app.register(discordAuthRoutes);
   await app.register(discordInteractionRoutes);

@@ -12,7 +12,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const url = input instanceof Request ? input.url : input.toString();
 
-      if (url.endsWith("/health")) {
+      if (url.endsWith("/api/health")) {
         return jsonResponse({ ok: true });
       }
 
@@ -54,7 +54,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const url = input instanceof Request ? input.url : input.toString();
 
-      if (url.endsWith("/health")) {
+      if (url.endsWith("/api/health")) {
         return jsonResponse({ ok: true });
       }
 
@@ -136,7 +136,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
       const url = input instanceof Request ? input.url : input.toString();
 
-      if (url.endsWith("/health")) {
+      if (url.endsWith("/api/health")) {
         return jsonResponse({ ok: true });
       }
 
