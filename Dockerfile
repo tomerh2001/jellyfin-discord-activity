@@ -23,8 +23,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /prod ./
 COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build /app/apps/activity-web/dist ./apps/activity-web/dist
 COPY --from=native /app/native-client/dist ./native-client/dist
+COPY --from=build /app/apps/activity-web/dist ./native-client/dist
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 3000

@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
 const repoRootFromDist = path.resolve(currentDir, "../../../..");
-const frontendDist = path.join(repoRootFromDist, "apps/activity-web/dist");
 const nativeDist = path.join(repoRootFromDist, "native-client/dist");
 
 declare module "fastify" {
@@ -23,8 +22,7 @@ async function exists(directory: string): Promise<boolean> {
   }
 }
 
-export const staticFrontendPlugin: FastifyPluginAsync<{ frontendDirectory?: string; nativeDirectory?: string }> = async (app, options) => {
-  const frontendRoot = options.frontendDirectory ?? frontendDist;
+export const staticFrontendPlugin: FastifyPluginAsync<{ nativeDirectory?: string }> = async (app, options) => {
   const nativeRoot = options.nativeDirectory ?? nativeDist;
   app.addHook("onRoute", (route) => { route.config = { ...route.config, jellyfinStatic: true }; });
   app.addHook("onSend", async (request, reply, payload) => {
@@ -42,39 +40,19 @@ export const staticFrontendPlugin: FastifyPluginAsync<{ frontendDirectory?: stri
     }
     return payload;
   });
-  if (await exists(nativeRoot)) {
-    await app.register(staticPlugin, {
-      root: nativeRoot,
-      prefix: "/jellyfin-web/",
-      decorateReply: false,
-      cacheControl: false,
-      preCompressed: true
-    });
-  } else if (app.envConfig.NODE_ENV === "production") {
-    throw new Error("The packaged Jellyfin Web client is missing. Build the complete release image.");
-  }
-  if (!(await exists(frontendRoot))) {
-    app.log.warn({ frontendDist: frontendRoot }, "frontend build output not found; static serving disabled");
+  if (!(await exists(nativeRoot))) {
+    if (app.envConfig.NODE_ENV === "production") throw new Error("The packaged Jellyfin Web client is missing. Build the complete release image.");
+    app.log.warn("native client build output not found; static serving disabled");
     return;
   }
-
+  // The native HashRouter runs in the Activity document itself. Every packaged
+  // route still passes the Discord ingress hook before serving or revalidation.
   await app.register(staticPlugin, {
-    root: frontendRoot,
-    wildcard: false,
+    root: nativeRoot,
+    // Native vendor chunks contain @ scopes; the wildcard handler decodes
+    // browser-encoded %40 paths before looking up the packaged filename.
+    wildcard: true,
     preCompressed: true,
     cacheControl: false
-  });
-
-  app.setNotFoundHandler(async (request, reply) => {
-    if (request.method === "GET" && !["/api", "/ws", "/media", "/jf/", "/jellyfin-web/"].some((prefix) => request.url.startsWith(prefix))) {
-      return reply.sendFile("index.html");
-    }
-
-    return reply.code(404).send({
-      error: {
-        code: "not_found",
-        message: "Route not found"
-      }
-    });
   });
 };

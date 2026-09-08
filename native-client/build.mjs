@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { precompress } from './precompress.mjs';
 import { patchVideoUnpause } from './videoPlaybackPatch.mjs';
+import { patchNativeIntegration } from './integrationPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -39,14 +40,18 @@ async function replace(relative, before, after) {
 }
 
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
+await patchNativeIntegration(replace);
 await replace('webpack.common.js', "const NODE_MODULES_REGEX =", `// Pin build metadata to Jellyfin's source, not a containing checkout.\nCOMMIT_SHA = '${upstream.commit}';\nconst NODE_MODULES_REGEX =`);
 await replace('src/index.jsx', "import RootApp from './RootApp';", "import RootApp from './RootApp';\nimport { bootstrapDiscord, finishDiscordBootstrap, failDiscordBootstrap } from './discordActivity/runtime';");
 await replace('src/index.jsx', `    // Initialize the api client
     const serverUrl = await serverAddress();
     if (serverUrl) {
         ServerConnections.initApiClient(serverUrl);
-    }`, '    // Wait for the stable Discord shell before creating any native connection.\n    await bootstrapDiscord();');
+    }`, '    // Keep Discord and Jellyfin in one native document.\n    await bootstrapDiscord();');
 await replace('src/index.jsx', "import { pageClassOn, serverAddress } from './utils/dashboard';", "import { pageClassOn } from './utils/dashboard';");
+await replace('src/index.jsx', '    // Load the translation dictionary\n    await loadCoreDictionary();', '    // The dictionary was loaded before the native account dialogs.');
+await replace('src/index.jsx', '    await bootstrapDiscord();', '    await loadCoreDictionary();\n    await bootstrapDiscord();');
+await replace('src/plugins/syncPlay/plugin.ts', '(_, newApiClient) => SyncPlay.Manager.init(newApiClient)', '(_, newApiClient) => SyncPlay.Manager.updateApiClient(newApiClient)');
 await replace('src/index.jsx', '    await renderApp();', '    await renderApp();\n    await finishDiscordBootstrap();');
 await replace('src/index.jsx', '        registerServiceWorker();', '        // Activity sessions and gateway capabilities must never enter a service-worker cache.');
 await replace('src/index.jsx', '\ninit();', '\ninit().catch(failDiscordBootstrap);');
@@ -77,6 +82,7 @@ for (const player of ['htmlVideoPlayer', 'htmlAudioPlayer']) {
 }
 const configPath = path.join(source, 'src/config.json');
 const config = JSON.parse(await readFile(configPath, 'utf8'));
+config.multiserver = true;
 config.plugins = config.plugins.filter(plugin => !['sessionPlayer/plugin', 'chromecastPlayer/plugin', 'youtubePlayer/plugin'].includes(plugin));
 await writeFile(configPath, JSON.stringify(config, null, 2) + '\n');
 
@@ -93,7 +99,7 @@ if (!process.argv.includes('--prepare-only')) {
     const nativeIndex = path.join(root, 'dist/index.html');
     const nativeHtml = await readFile(nativeIndex, 'utf8');
     if (nativeHtml.split('<head>').length !== 2) throw new Error('Native HTML bootstrap anchor changed');
-    await writeFile(nativeIndex, nativeHtml.replace('<head>', '<head><script src="activity-storage.js"></script>'));
+    await writeFile(nativeIndex, nativeHtml.replace('<head>', '<head><script src="/activity-storage.js"></script><script src="/activity-session.js"></script>'));
 
     await cp(path.join(source, 'node_modules/hls.js/dist/hls.worker.js'), path.join(root, 'dist/libraries/hls.worker.js'));
     await cp(path.join(source, 'node_modules/hls.js/LICENSE'), path.join(root, 'dist/HLS-LICENSE.txt'));

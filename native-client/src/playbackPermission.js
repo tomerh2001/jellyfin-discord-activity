@@ -4,12 +4,21 @@ export const PLAYBACK_BLOCKED_EVENT = 'jellyfin-watch-playback-blocked';
  * WebKit grants playback permission to the actual media element. Playing a
  * throwaway silent audio element does not unlock a video created later.
  */
-export function installPlaybackPermission(host, getLastCommand) {
+export function installPlaybackPermission(host, getLastCommand, mountButton) {
     let blockedMedia;
     let generation = 0;
-    const button = host.document.createElement('button');
-    button.type = 'button';
-    button.className = 'discordPlaybackPermission';
+    // Jellyfin uses the v0 customized-built-in polyfill. Its createElement
+    // overload expects a string, so v1 { is } options throw before player setup.
+    const holder = host.document.createElement('div');
+    holder.innerHTML = '<button is="emby-button" type="button" class="discordPlaybackPermission raised button-submit block"></button>';
+    const button = holder.firstElementChild;
+    let dismiss;
+    const remove = () => { dismiss?.(); dismiss = undefined; button.remove(); };
+    const show = () => {
+        if (button.isConnected) return;
+        if (mountButton) dismiss = mountButton(button);
+        else host.document.body.appendChild(button);
+    };
     button.textContent = 'Tap to play on this device';
 
     const blocked = event => {
@@ -19,18 +28,18 @@ export function installPlaybackPermission(host, getLastCommand) {
         blockedMedia = media;
         button.disabled = false;
         button.textContent = 'Tap to play on this device';
-        if (!button.isConnected) host.document.body.appendChild(button);
+        show();
     };
     const playing = event => {
         if (event.target === blockedMedia) {
             blockedMedia = undefined;
-            button.remove();
+            remove();
         }
     };
     const click = () => {
         const media = blockedMedia;
         const attempt = generation;
-        if (!media?.isConnected) { button.remove(); blockedMedia = undefined; return; }
+        if (!media?.isConnected) { remove(); blockedMedia = undefined; return; }
         // No await, audio probe, RPC or server request may precede this call.
         // Keep the native SyncPlay clock in charge; unlocking a paused viewer
         // must never send an Unpause command to everyone else.
@@ -43,14 +52,14 @@ export function installPlaybackPermission(host, getLastCommand) {
             const command = getLastCommand();
             if (command?.Command === 'Pause' || command?.Command === 'Stop') media.pause();
             if (blockedMedia === media) blockedMedia = undefined;
-            button.remove();
+            remove();
         }).catch(() => {
             if (attempt !== generation) return;
             if (blockedMedia && blockedMedia !== media) return;
             blockedMedia = media;
             button.disabled = false;
             button.textContent = 'Tap again to play on this device';
-            if (media.isConnected && !button.isConnected) host.document.body.appendChild(button);
+            if (media.isConnected) show();
         });
     };
     button.addEventListener('click', click);
@@ -61,7 +70,7 @@ export function installPlaybackPermission(host, getLastCommand) {
         host.document.removeEventListener(PLAYBACK_BLOCKED_EVENT, blocked, true);
         host.document.removeEventListener('playing', playing, true);
         button.removeEventListener('click', click);
-        button.remove();
+        remove();
         blockedMedia = undefined;
     };
 }

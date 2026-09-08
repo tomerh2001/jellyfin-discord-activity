@@ -74,7 +74,7 @@ export function createSessionStarter() {
     return { discord, exchange };
   }
   const start = () => {
-    // React replays and retry clicks share the same operation, including the
+    // Native initialization and retry clicks share the same operation, including the
     // authenticated SDK/token after a later stage has failed.
     pending ??= connect().finally(() => { pending = undefined; });
     return pending;
