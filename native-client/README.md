@@ -140,6 +140,27 @@ fixture cannot establish warm-cache behavior. Keep real compiled SDK code with
 explicitly modeled parent RPC delays; report those delays and distinguish
 synthetic Home/player timings from actual Discord or Jellyfin transcoding.
 
+Seek previews keep Jellyfin's native slider, thumbnail crop, chapter label and
+timestamp. The adapter preloads the current trickplay sheet when playback
+metadata arrives and keeps at most two decoded image nodes for the current
+item, media source and gateway capability. The loaded node becomes the native
+preview, avoiding a second request for an uncached sheet. Until decoding succeeds,
+the normal timestamp stays visible. Failed or timed-out images can retry on a
+later hover after two seconds; there is no background retry loop. A changed
+player, account or capability clears images and rejects late completions.
+The final thumbnail index is clamped to `ThumbnailCount - 1`, including a seek
+rounded to the video's duration. Chapter-only previews still use the upstream
+renderer. The gateway path supplies authentication; image URLs retain
+`MediaSourceId` and omit the redundant `ApiKey` query parameter.
+
+A metadata request with `Fields=Chapters,Trickplay` is not a sprite request:
+look specifically for `/Videos/{id}/Trickplay/{width}/{sheet}.jpg` when debugging.
+HTTP 200 and a JPEG signature alone do not establish browser rendering; verify
+decoded dimensions, native crop coordinates and visible pixels. These changes
+address loading/error behavior and the reproducible final-frame boundary. They
+do not establish the cause of a missing thumbnail that cannot be reproduced in
+the real Discord renderer.
+
 Jellyfin Web is GPL-2.0-or-later. The compiled output includes its license and
 source metadata; this repository includes all modifications and the repeatable
 source build. The upstream source is available at the pinned repository commit.
