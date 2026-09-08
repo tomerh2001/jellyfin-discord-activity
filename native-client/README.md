@@ -13,6 +13,11 @@ The build applies a small integration patch before compiling the upstream source
 - The native ApiClient receives an opaque gateway capability, account and device
   identity. Real Jellyfin credentials remain on the broker. Native credentials
   are held in memory and service-worker registration is disabled.
+- A classic script runs before native modules and supplies separate in-memory
+  localStorage/sessionStorage objects. Discord can deny the storage getters even
+  on HTTPS. The optional CacheStorage response cache is disabled before its
+  constructor runs. Browser preferences last for the current Activity document;
+  saved server accounts remain on the broker.
 - Native SyncPlay joins the Activity's mapped group after the WebSocket opens.
   Reconnection joins that same group. A socket outage lasting 40 seconds asks the
   parent for a fresh gateway launch, since disconnected capabilities expire.
