@@ -9,5 +9,9 @@ describe("logger redaction", () => {
   it("redacts media bearer tickets and Jellyfin credentials", () => {
     expect(redactUrl("/media/hls/secret/master.m3u8?api_key=jellyfin")).toBe("/media/hls/[redacted]/master.m3u8?api_key=%5Bredacted%5D");
     expect(redactUrl("/media/direct/secret/stream.mp4")).toBe("/media/direct/[redacted]/stream.mp4");
+    expect(redactUrl("/jf/viewer-secret/Videos/movie/master.m3u8?api_key=opaque&startTimeTicks=0"))
+      .toBe("/jf/[redacted]/Videos/movie/master.m3u8?api_key=%5Bredacted%5D&startTimeTicks=0");
+    expect(redactUrl("/jf/viewer-secret/socket?api_key=opaque"))
+      .toBe("/jf/[redacted]/socket?api_key=%5Bredacted%5D");
   });
 });

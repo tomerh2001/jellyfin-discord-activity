@@ -15,7 +15,7 @@ Access is limited to the operator's authorized community and the Jellyfin librar
 - Use the service only for media you are permitted to access and watch with the participants involved. Service access does not grant copyright, distribution or other rights in that media.
 - Follow [Discord's Terms of Service](https://discord.com/terms), [Community Guidelines](https://discord.com/guidelines), applicable law and the community's rules.
 - Do not share access tokens, credentials or media-ticket URLs, attempt to defeat access controls, enter unauthorized rooms, extract credentials, or disrupt the service or other participants.
-- Respect host controls and other viewers. Do not use the Activity to harass people or expose personal information.
+- Respect shared playback controls and other viewers. Do not use the Activity to harass people or expose personal information.
 
 The operator may restrict access or end a session to address misuse, security concerns, service capacity or community needs. Report suspected vulnerabilities privately to **tomerh2001 on Discord** without accessing other users' data or publishing credentials.
 

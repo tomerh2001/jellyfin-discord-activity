@@ -15,7 +15,6 @@ export const envSchema = z.object({
   LOG_DIR: z.string().default(""),
   TRUST_PROXY: booleanFromString.default(false),
   PUBLIC_BASE_URL: z.string().url().default("http://localhost:3000"),
-  PUBLIC_WS_URL: z.string().url().default("ws://localhost:3000/ws"),
   PUBLIC_DISCORD_CLIENT_ID: z.string().default("dev-client-id"),
   DISCORD_CLIENT_ID: z.string().default("dev-client-id"),
   DISCORD_BOT_TOKEN: z.string().default(""),
@@ -35,20 +34,11 @@ export const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY: z.string().default(""),
   DATABASE_URL: z.string().default("file:/data/app.db"),
   JELLYFIN_DEFAULT_SERVER_URL: z.string().url().default("http://localhost:8096"),
-  JELLYFIN_ALLOW_CUSTOM_SERVERS: booleanFromString.default(false),
+  JELLYFIN_ALLOW_CUSTOM_SERVERS: booleanFromString.default(true),
   JELLYFIN_AUTH_MODE: z.enum(["per-user", "shared"]).default("per-user"),
   JELLYFIN_SHARED_USERNAME: z.string().default(""),
   JELLYFIN_SHARED_PASSWORD: z.string().default(""),
-  STREAM_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(14_400),
-  STREAM_MAX_BITRATE: z.coerce.number().int().positive().default(20_000_000),
-  STREAM_MAX_WIDTH: z.coerce.number().int().positive().default(1920),
-  STREAM_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),
-  STREAM_PROXY_MODE: z.enum(["hls-first", "direct"]).default("hls-first"),
   ROOM_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
-  ROOM_IDLE_TTL_SECONDS: z.coerce.number().int().positive().default(900),
-  SYNC_STATE_UPDATE_MS: z.coerce.number().int().positive().default(1000),
-  SYNC_HARD_SEEK_THRESHOLD_SECONDS: z.coerce.number().positive().default(2.0),
-  SYNC_SOFT_DRIFT_THRESHOLD_SECONDS: z.coerce.number().positive().default(0.08),
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(300),
   RATE_LIMIT_WINDOW: z.string().default("1 minute"),
   ALLOWED_ORIGINS: z.string().default("http://localhost:5173,http://localhost:3000")
@@ -81,7 +71,6 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
       problems.push("Set DISCORD_ALLOWED_GUILD_IDS and/or DISCORD_ALLOWED_USER_IDS to valid Discord IDs");
     }
     if (!env.PUBLIC_BASE_URL.startsWith("https://")) problems.push("PUBLIC_BASE_URL must use HTTPS");
-    if (env.JELLYFIN_ALLOW_CUSTOM_SERVERS) problems.push("Custom Jellyfin servers must be disabled in production");
     if (env.JELLYFIN_AUTH_MODE === "shared" && (!env.JELLYFIN_SHARED_USERNAME || !env.JELLYFIN_SHARED_PASSWORD)) {
       problems.push("Shared Jellyfin username and password must be configured");
     }

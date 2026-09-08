@@ -1,35 +1,32 @@
 import { apiError } from "@app/shared";
-import Fastify from "fastify";
+import Fastify, { type FastifyBaseLogger, type RawServerDefault } from "fastify";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { loadEnv, type AppEnv } from "./env.js";
 import { loggerConfig } from "./logger.js";
 import { discordProxyPlugin } from "./plugins/discordProxy.js";
-import { roomCleanupPlugin } from "./plugins/roomCleanup.js";
 import { securityPlugin } from "./plugins/security.js";
 import { staticFrontendPlugin } from "./plugins/static.js";
 import { websocketPlugin } from "./plugins/websocket.js";
 import { discordAuthRoutes } from "./routes/discordAuth.js";
 import { discordInteractionRoutes } from "./routes/discordInteractions.js";
-import { roomManager } from "./services/roomManager.js";
 import { healthRoutes } from "./routes/health.js";
-import { jellyfinAuthRoutes } from "./routes/jellyfinAuth.js";
-import { jellyfinLibraryRoutes } from "./routes/jellyfinLibrary.js";
-import { playbackRoutes } from "./routes/playback.js";
-import { roomRoutes } from "./routes/rooms.js";
-import { wsRoutes } from "./ws/index.js";
+import { connectionRoutes } from "./routes/connections.js";
+import { nativePartyRoutes } from "./routes/nativeParty.js";
+import { nativeJellyfinRoutes } from "./routes/nativeJellyfin.js";
+import { getNativePartyService } from "./services/nativeParty.js";
+import { AuthError, sendAuthError } from "./plugins/auth.js";
 
 export async function buildApp(env: AppEnv = loadEnv()) {
-  const app = Fastify({
+  const app = Fastify<RawServerDefault, IncomingMessage, ServerResponse, FastifyBaseLogger>({
     ...loggerConfig(env),
     trustProxy: env.TRUST_PROXY
   });
 
   app.decorate("envConfig", env);
-  if (env.NODE_ENV !== "test") {
-    roomManager.configurePersistence(env.DATABASE_URL);
-    app.addHook("onClose", async () => { roomManager.flushPersistence(); });
-  }
   app.decorateRequest("appSession");
+  getNativePartyService(app);
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof AuthError) return reply.code(error.statusCode).send(sendAuthError(error));
     const appShapedError = error as unknown as { error?: { code?: string; message?: string }; statusCode?: number };
     const message = error instanceof Error ? error.message : "Request failed";
 
@@ -52,13 +49,10 @@ export async function buildApp(env: AppEnv = loadEnv()) {
   await app.register(healthRoutes);
   await app.register(discordAuthRoutes);
   await app.register(discordInteractionRoutes);
-  await app.register(jellyfinAuthRoutes);
-  await app.register(jellyfinLibraryRoutes);
-  await app.register(playbackRoutes);
-  await app.register(roomRoutes);
-  await app.register(wsRoutes);
+  await app.register(connectionRoutes);
+  await app.register(nativePartyRoutes);
+  await app.register(nativeJellyfinRoutes);
   await app.register(staticFrontendPlugin);
-  await app.register(roomCleanupPlugin(env));
 
   return app;
 }

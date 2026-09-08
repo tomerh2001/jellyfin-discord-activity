@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
-import { createAppSession } from "../services/appSession.js";
 import { createDiscordProxyVerifier } from "../services/discordProxySignature.js";
 
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -84,7 +83,7 @@ describe("Discord-only ingress", () => {
   it("requires proxy proof on UI, assets, APIs, media, unknown routes and every HTTP method", async () => {
     const app = await buildApp(loadEnv(envInput));
     try {
-      for (const url of ["/", "/assets/app.js", "/api/config", "/api/health", "/media/direct/stolen/stream", "/unknown", "/ws"]) {
+      for (const url of ["/", "/assets/app.js", "/api/config", "/api/health", "/jf/stolen/Videos/0123456789abcdef0123456789abcdef/stream", "/unknown", "/jf/stolen/socket"]) {
         const response = await app.inject({ url, remoteAddress: "198.51.100.4" });
         expect(response.statusCode, url).toBe(401);
         expect(response.headers["cache-control"]).toBe("private, no-store");
@@ -161,11 +160,10 @@ describe("Discord-only ingress", () => {
     const env = loadEnv({ ...envInput, DEV_AUTH_MOCK: "true" });
     const app = await buildApp(env);
     try {
-      const { appToken } = await createAppSession({ env, user: { id: "proxy-ws", username: "Member" }, discordContext: { instanceId: "proxy-ws-room" } });
       const base = await app.listen({ host: "127.0.0.1", port: 0 });
-      const url = `${base}/ws?instanceId=proxy-ws-room&token=${encodeURIComponent(appToken)}`;
+      const url = `${base}/jf/stolen/socket`;
       expect(await upgradeStatus(url, {})).toBe(401);
-      expect(await upgradeStatus(url, signed())).toBe(101);
+      expect(await upgradeStatus(url, signed())).toBe(401);
     } finally { await app.close(); }
   });
 

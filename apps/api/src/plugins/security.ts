@@ -6,6 +6,7 @@ import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import type { AppEnv } from "../env.js";
 import { allowedOrigins } from "../env.js";
+import { createHash } from "node:crypto";
 
 export function securityPlugin(env: AppEnv): FastifyPluginAsync {
   return fp(async (app) => {
@@ -33,9 +34,15 @@ export function securityPlugin(env: AppEnv): FastifyPluginAsync {
       max: env.RATE_LIMIT_MAX,
       timeWindow: env.RATE_LIMIT_WINDOW,
       allowList(request) {
-        return request.url.startsWith("/media/") || request.url === "/health" || request.url === "/api/health";
+        // Static chunks and media segments have their own ingress/capability checks;
+        // they must not consume the JSON/control request budget while watching.
+        return request.url.startsWith("/jellyfin-web/")
+          || /^\/jf\/[^/]+\/(?:Videos\/|Audio\/|Items\/[^/]+\/Images(?:\/|\?))/.test(request.url)
+          || request.url === "/health" || request.url === "/api/health";
       },
       keyGenerator(request) {
+        const capability = /^\/jf\/([^/]+)\//.exec(request.url)?.[1];
+        if (capability) return `viewer:${createHash("sha256").update(capability).digest("hex")}`;
         return request.ip;
       },
       errorResponseBuilder() {

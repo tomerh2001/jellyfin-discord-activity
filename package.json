@@ -28,10 +28,10 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
+    "build:native": "node native-client/build.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
-    "db:migrate": "pnpm --filter @app/api db:migrate",
     "smoke": "pnpm --filter @app/api smoke",
     "start": "node apps/api/dist/server.js",
     "discord:register": "pnpm --filter @app/api exec tsx src/registerCommands.ts"

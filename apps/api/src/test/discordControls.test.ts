@@ -1,128 +1,102 @@
-import type { ServerMessage } from "@app/shared/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FastifyInstance } from "fastify";
+import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
 import { runControl } from "../routes/discordInteractions.js";
-import { createAppSession } from "../services/appSession.js";
-import { roomManager } from "../services/roomManager.js";
-import { handleClientMessage } from "../ws/handlers.js";
-import { roomSocketHub, type RoomSocket } from "../ws/roomSocket.js";
+import { getNativePartyService, type NativeParty, type NativeViewer } from "../services/nativeParty.js";
 
 const guildId = "333333333333333333";
 const channelId = "444444444444444444";
-const hostId = "222222222222222222";
-const guestId = "555555555555555555";
+const memberId = "555555555555555555";
 const applicationId = "111111111111111111";
-const env = loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", DISCORD_CLIENT_ID: applicationId,
-  DISCORD_BOT_TOKEN: "unit-test-bot-token", DISCORD_ALLOWED_GUILD_IDS: guildId, LOG_LEVEL: "silent" });
-let roomCount = 0;
+const context = { instanceId: "instance-current", guildId, channelId };
+const apps: FastifyInstance[] = [];
 
 function interaction(action: string, seconds?: number) {
-  return { id: `interaction-${roomCount}`, application_id: applicationId, type: 2, guild_id: guildId,
-    channel_id: "text-channel-is-not-the-voice-channel", data: { name: "jellyfin", options: [
+  return { id: "interaction", application_id: applicationId, type: 2, guild_id: guildId,
+    channel_id: "different-text-channel", data: { name: "jellyfin", options: [
       { name: action, ...(seconds !== undefined ? { options: [{ name: "seconds", value: seconds }] } : {}) }
     ] }
   };
 }
-
-async function setup(input: { hostConnected?: boolean; guestConnected?: boolean } = {}) {
-  const instanceId = `commands-${++roomCount}`;
-  // Different voice channels per test prevent an old room from winning findByChannel.
-  const voiceChannelId = `${channelId}-${roomCount}`;
-  const context = { instanceId, guildId, channelId: voiceChannelId };
-  const messages = new Map<string, ServerMessage[]>();
-  for (const [userId, connected] of [[hostId, input.hostConnected ?? true], [guestId, input.guestConnected ?? true]] as const) {
-    if (!connected) continue;
-    const { session } = await createAppSession({ env, user: { id: userId, username: userId }, discordContext: context });
-    messages.set(userId, []);
-    const client: RoomSocket = { clientId: `client-${instanceId}-${userId}`, instanceId, session, username: userId,
-      connectedAt: new Date().toISOString(), socket: { readyState: 1,
-        send: (data: string) => { messages.get(userId)!.push(JSON.parse(data) as ServerMessage); }, close: () => {}, on: () => {} } };
-    roomSocketHub.add(client);
-  }
-  roomManager.claimHost(context, hostId);
-  roomManager.selectMedia({ instanceId, itemId: "movie-1", title: "Test movie", runtimeTicks: 1200 * 10_000_000 }, hostId);
-  roomManager.updatePlaybackState({ instanceId, discordUserId: hostId, playState: "playing", positionSeconds: 120 });
-  const fetchMock = vi.fn(async (url: string | URL | Request) => {
+async function setup() {
+  const app = await buildApp(loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", DISCORD_CLIENT_ID: applicationId,
+    DISCORD_BOT_TOKEN: "unit-test-bot-token", DISCORD_ALLOWED_GUILD_IDS: guildId, LOG_LEVEL: "silent" }));
+  apps.push(app);
+  const service = getNativePartyService(app);
+  const party = { id: "current-party", context } as NativeParty;
+  const viewer = { discordUserId: memberId } as NativeViewer;
+  const find = vi.spyOn(service,"getPartyForChannel").mockImplementation((guild,channel) => guild === guildId && channel === channelId ? party : undefined);
+  const member = vi.spyOn(service,"getViewerForDiscordUser").mockImplementation((id,user) => id === party.id && user === memberId ? viewer : undefined);
+  const command = vi.spyOn(service,"command").mockResolvedValue(null);
+  const upstream = vi.fn(async (url: string | URL | Request) => {
     const address = String(url);
-    if (address.includes("/voice-states/")) return Response.json({ channel_id: voiceChannelId });
-    if (address.includes("/activity-instances/")) return Response.json({ application_id: applicationId, instance_id: instanceId,
-      location: { guild_id: guildId, channel_id: voiceChannelId }, users: [hostId, guestId] });
-    throw new Error(`Unexpected test request: ${address}`);
+    if (address.includes("/voice-states/")) return Response.json({ channel_id: channelId });
+    if (address.includes("/activity-instances/")) return Response.json({ application_id: applicationId, instance_id: context.instanceId,
+      location: { guild_id: guildId, channel_id: channelId }, users: [memberId] });
+    throw new Error("Unexpected external request in command test");
   });
-  vi.stubGlobal("fetch", fetchMock);
-  return { instanceId, voiceChannelId, messages, fetchMock };
+  vi.stubGlobal("fetch",upstream);
+  return { app, party, viewer, find, member, command, upstream };
 }
 
-afterEach(() => { roomSocketHub.clear(); vi.unstubAllGlobals(); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); await Promise.all(apps.splice(0).map(app => app.close())); });
 
-describe("Discord voice-channel controls", () => {
-  it("does not echo a player's own action but delivers Discord commands to that player", async () => {
-    const { instanceId, messages } = await setup();
-    const host = roomSocketHub.clients(instanceId).find((client) => client.session.discordUserId === hostId)!;
-    handleClientMessage(env, host, { type: "player_event", action: "pause", positionSeconds: 90, ts: Date.now() });
-    expect(messages.get(hostId)?.filter((message) => message.type === "player_event")).toEqual([]);
-    expect(messages.get(guestId)).toContainEqual(expect.objectContaining({ type: "player_event", action: "pause", positionSeconds: 90 }));
-    await runControl(env, interaction("resume"), hostId);
-    expect(messages.get(hostId)).toContainEqual(expect.objectContaining({ type: "player_event", action: "play", positionSeconds: 90 }));
-  });
-
-  it("uses the caller's real voice state and verifies Activity participation before pausing everyone", async () => {
-    const { instanceId, voiceChannelId, messages, fetchMock } = await setup();
-    const result = await runControl(env, interaction("pause"), hostId);
-    expect(result.content).toContain("Paused at 120");
-    expect(roomManager.get(instanceId)?.playState).toBe("paused");
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
-      `https://discord.com/api/v10/guilds/${guildId}/voice-states/${hostId}`,
-      `https://discord.com/api/v10/applications/${applicationId}/activity-instances/${instanceId}`
+describe("Discord native SyncPlay controls", () => {
+  it("uses current voice and authoritative Activity membership before controlling the caller's own native session", async () => {
+    const {app,viewer,find,command,upstream} = await setup();
+    expect((await runControl(app,interaction("pause"),memberId)).content).toBe("Party paused.");
+    expect(find).toHaveBeenCalledWith(guildId,channelId);
+    expect(upstream.mock.calls.map(([url])=>String(url))).toEqual([
+      `https://discord.com/api/v10/guilds/${guildId}/voice-states/${memberId}`,
+      `https://discord.com/api/v10/applications/${applicationId}/activity-instances/${context.instanceId}`
     ]);
-    expect(roomManager.get(instanceId)?.channelId).toBe(voiceChannelId);
-    for (const userId of [hostId, guestId]) {
-      expect(messages.get(userId)).toContainEqual(expect.objectContaining({ type: "player_event", action: "pause", positionSeconds: expect.closeTo(120, 0) }));
-    }
+    expect(command).toHaveBeenCalledExactlyOnceWith(viewer,"pause");
   });
-
-  it("rejects a member who is not in a voice channel", async () => {
-    const { instanceId, fetchMock } = await setup();
-    fetchMock.mockResolvedValueOnce(Response.json({ channel_id: null }));
-    await expect(runControl(env, interaction("pause"), hostId)).rejects.toThrow("Join a voice channel");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(roomManager.get(instanceId)?.playState).toBe("playing");
+  it("refuses a caller outside voice or in a different channel", async () => {
+    const {app,command,upstream} = await setup();
+    upstream.mockResolvedValueOnce(Response.json({channel_id:null}));
+    await expect(runControl(app,interaction("pause"),memberId)).rejects.toThrow("Join a voice channel");
+    upstream.mockResolvedValueOnce(Response.json({channel_id:"other"}));
+    await expect(runControl(app,interaction("pause"),memberId)).rejects.toThrow("Open /watch");
+    expect(command).not.toHaveBeenCalled();
   });
-
-  it("cannot control a room from another voice channel", async () => {
-    const { instanceId, fetchMock } = await setup();
-    fetchMock.mockResolvedValueOnce(Response.json({ channel_id: "unrelated-voice-channel" }));
-    await expect(runControl(env, interaction("pause"), hostId)).rejects.toThrow("Open /watch");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(roomManager.get(instanceId)?.playState).toBe("playing");
+  it("refuses a caller absent from Discord's live Activity response", async () => {
+    const {app,command,upstream} = await setup();
+    upstream.mockResolvedValueOnce(Response.json({channel_id:channelId}));
+    upstream.mockResolvedValueOnce(Response.json({application_id:applicationId,instance_id:context.instanceId,
+      location:{guild_id:guildId,channel_id:channelId},users:[]}));
+    await expect(runControl(app,interaction("pause"),memberId)).rejects.toThrow("discord_activity_forbidden");
+    expect(command).not.toHaveBeenCalled();
   });
-
-  it("rejects a voice member absent from the authoritative Activity participants", async () => {
-    const { instanceId, voiceChannelId, fetchMock } = await setup();
-    fetchMock.mockResolvedValueOnce(Response.json({ channel_id: voiceChannelId }));
-    fetchMock.mockResolvedValueOnce(Response.json({ application_id: applicationId, instance_id: instanceId,
-      location: { guild_id: guildId, channel_id: voiceChannelId }, users: [guestId] }));
-    await expect(runControl(env, interaction("pause"), hostId)).rejects.toThrow("discord_activity_forbidden");
-    expect(roomManager.get(instanceId)?.playState).toBe("playing");
+  it("requires a connected native viewer even for an Activity member", async () => {
+    const {app,member,command} = await setup();
+    member.mockReturnValue(undefined);
+    await expect(runControl(app,interaction("resume"),memberId)).rejects.toThrow("connect its Jellyfin player");
+    expect(command).not.toHaveBeenCalled();
   });
-
-  it("lets participants inspect the title but refuses nonhost playback changes", async () => {
-    const { instanceId } = await setup();
-    expect((await runControl(env, interaction("now"), guestId)).content).toContain("Test movie");
-    await expect(runControl(env, interaction("pause"), guestId)).rejects.toThrow("Only the connected Activity host");
-    expect(roomManager.get(instanceId)?.playState).toBe("playing");
+  it("exposes collaborative seek and next-episode commands through the native service", async () => {
+    const {app,viewer,command} = await setup();
+    await runControl(app,interaction("seek",60),memberId);
+    expect(command).toHaveBeenCalledWith(viewer,"seek",{seconds:60});
+    await runControl(app,interaction("next"),memberId);
+    expect(command).toHaveBeenCalledWith(viewer,"next");
+    await expect(runControl(app,interaction("seek",-1),memberId)).rejects.toThrow("between 0 and 86400");
+    await expect(runControl(app,interaction("seek",Infinity),memberId)).rejects.toThrow("between 0 and 86400");
   });
-
-  it("refuses control from a stored host with no live Activity socket", async () => {
-    const { instanceId } = await setup({ hostConnected: false });
-    await expect(runControl(env, interaction("pause"), hostId)).rejects.toThrow("Only the connected Activity host");
-    expect(roomManager.get(instanceId)?.playState).toBe("playing");
+  it("does not apply a search dropdown from a previous server/group binding", async () => {
+    const {app,command} = await setup();
+    const selection = {id:"selection",application_id:applicationId,type:3,guild_id:guildId,
+      data:{custom_id:"jellyfin:select:old-party",values:["a".repeat(32)]}};
+    await expect(runControl(app,selection,memberId)).rejects.toThrow("earlier watch party");
+    expect(command).not.toHaveBeenCalled();
+    selection.data.custom_id = "jellyfin:select:current-party";
+    await runControl(app,selection,memberId);
+    expect(command).toHaveBeenCalledWith(expect.anything(),"select",{itemIds:["a".repeat(32)]});
   });
-
-  it("bounds seek targets to the selected media duration", async () => {
-    const { instanceId } = await setup();
-    await runControl(env, interaction("seek", 2400), hostId);
-    expect(roomManager.get(instanceId)).toMatchObject({ playState: "paused", positionSeconds: 1200 });
-    await expect(runControl(env, interaction("seek", -1), hostId)).rejects.toThrow("between 0 and 86400");
+  it("reports native playback state instead of extrapolating a second timeline", async () => {
+    const {app,command} = await setup();
+    command.mockResolvedValue({title:"Episode",positionSeconds:87.25,isPaused:false});
+    expect((await runControl(app,interaction("now"),memberId)).content).toBe("Episode: playing at 87 seconds.");
   });
 });

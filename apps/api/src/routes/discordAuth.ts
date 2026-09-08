@@ -10,7 +10,7 @@ import { createAppSession, getBearerToken, verifyAppToken } from "../services/ap
 import { DiscordActivityError, DiscordOAuthError, allowedDiscordActor, exchangeDiscordCode, getDiscordCurrentUser, verifyDiscordActivityContext } from "../services/discord.js";
 import { sessionStore } from "../services/sessionStore.js";
 import { AuthError, getAppSessionUser, requireAppSession, sendAuthError } from "../plugins/auth.js";
-import { JellyfinAccountStore } from "../services/jellyfinAccountStore.js";
+import { JellyfinConnectionStore } from "../services/jellyfinConnections.js";
 
 export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
   app.post("/api/discord/exchange", async (request, reply) => {
@@ -88,11 +88,10 @@ export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(401).send(apiError("invalid_app_token", "Invalid or expired app token."));
       }
 
-      const jellyfinStore = new JellyfinAccountStore(app.envConfig);
-      const jellyfinAccount = await jellyfinStore.get(session.discordUserId);
+      const connections = new JellyfinConnectionStore(app.envConfig).list(session.discordUserId, session.discordContext?.guildId);
       const response = meResponseSchema.parse({
         discordUser: user,
-        jellyfinLinked: app.envConfig.JELLYFIN_AUTH_MODE === "shared" || Boolean(jellyfinAccount),
+        jellyfinLinked: connections.length > 0,
         ...(session.discordContext ? { discordContext: session.discordContext } : {}),
         appSessionExpiresAt: session.expiresAt.toISOString()
       });

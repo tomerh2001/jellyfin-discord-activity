@@ -7,11 +7,11 @@ const currentDir = path.dirname(fileURLToPath(import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@app/shared/protocol": path.resolve(currentDir, "../../packages/shared/src/protocol.ts"),
       "@app/shared": path.resolve(currentDir, "../../packages/shared/src/index.ts")
     }
   },
   test: {
+    setupFiles: [path.resolve(currentDir, "src/test/setup.ts")],
     exclude: ["**/node_modules/**", "**/dist/**"]
   }
 });

@@ -7,10 +7,6 @@
     ".": {
       "types": "./src/index.ts",
       "import": "./dist/index.js"
-    },
-    "./protocol": {
-      "types": "./src/protocol.ts",
-      "import": "./dist/protocol.js"
     }
   },
   "scripts": {

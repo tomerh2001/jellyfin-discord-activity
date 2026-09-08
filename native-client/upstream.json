@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/jellyfin/jellyfin-web",
+  "version": "10.11.11",
+  "commit": "35c0793ece3adbd247eab290ae1effab851f3d37",
+  "archiveSha256": "1dd84a8bf4aaa90b12ca38e72e68a554826ab0ea28bb354bcc3212f579e0a337",
+  "license": "GPL-2.0-or-later"
+}

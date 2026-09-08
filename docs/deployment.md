@@ -4,9 +4,9 @@ The published container serves the Activity, REST API, WebSocket endpoint, and m
 
 ## Configuration and storage
 
-Copy `.env.example` to an untracked `.env`. Fill in the Discord IDs, keys, allowlists, public HTTPS/WSS URLs, and Jellyfin account configuration. `PUBLIC_DISCORD_CLIENT_ID` must match `DISCORD_CLIENT_ID`. Production requires `DEV_AUTH_MOCK=false` and `JELLYFIN_ALLOW_CUSTOM_SERVERS=false`.
+Copy `.env.example` to an untracked `.env`. Fill in the Discord IDs, keys, allowlists, public HTTPS/WSS URLs, and Jellyfin account configuration. `PUBLIC_DISCORD_CLIENT_ID` must match `DISCORD_CLIENT_ID`. Production requires `DEV_AUTH_MOCK=false`. Generic connections use `JELLYFIN_ALLOW_CUSTOM_SERVERS=true` with public HTTPS/DNS restrictions.
 
-The container runs as an unprivileged user. Its UID/GID can be remapped with Compose `user:`. Mount a writable persistent volume at `/data`; `DATABASE_URL=file:/data/app.db` places the encrypted Jellyfin account store and `rooms.json` snapshots there. Set `LOG_DIR=/data/logs` for file logging, or leave it empty for Docker logs only. Room snapshots restore paused and without host ownership; live app sessions never persist.
+The container runs as an unprivileged user. Its UID/GID can be remapped with Compose `user:`. Mount a writable persistent volume at `/data`; `DATABASE_URL=file:/data/app.db` places `jellyfin-connections.sqlite` and its encrypted tokens there. Set `LOG_DIR=/data/logs` for file logging, or leave it empty for Docker logs only. App sessions and live SyncPlay groups do not persist across restart.
 
 Backend secrets support Docker secret files (the edge secret is required only in Cloudflare Worker mode):
 
@@ -25,7 +25,7 @@ Shared mode uses a dedicated non-admin Jellyfin user. Grant media playback, remu
 
 ## HTTPS routing
 
-Route one HTTPS hostname to the container's port 3000, preserving `/`, `/api`, `/ws`, `/media`, and `/assets`. Enable WebSocket upgrades. Map `/` in Discord's Activities URL Mappings to that hostname without a scheme.
+Route one HTTPS hostname to the container's port 3000, preserving `/`, `/api`, `/jf`, `/jellyfin-web`, and `/assets`. Enable WebSocket upgrades. Map `/` in Discord's Activities URL Mappings to that hostname without a scheme.
 
 Production ingress authentication is always enabled. `DISCORD_PROXY_AUTH_MODE=signature` is the default and requires Discord's optional signed proxy headers. Deployments supporting slash/right-click launch paths that omit those headers can explicitly select `cloudflare-worker` only after configuring the trusted Worker field, overwrite/removal Transform Rules and WAF described in [Security](security.md#cloudflare-worker-attestation). The app never trusts an ordinary `CF-Worker`, `Origin` or `Referer` header. Both modes preserve independent Discord interaction signatures and all OAuth, allowed-guild, Activity-instance and media-session checks.
 
@@ -33,7 +33,7 @@ Keep existing Authentik routing policies intact. The app has Discord OAuth and r
 
 The Activity proxy and Discord webhook verifier cannot normally complete an interactive edge login. If this prevents use, an exact operator-approved routing decision is required. Do not silently exempt media, API, static, WebSocket, callback, or webhook routes.
 
-Media URLs contain short-lived bearer tickets. The app redacts them from request logs; configure reverse-proxy logs to omit sensitive URLs as well. Disable public caching of authenticated API and media responses.
+Media URLs contain temporary bearer capabilities. The app redacts them from request logs; configure reverse-proxy logs to omit sensitive URLs as well. Disable public caching of authenticated API and media responses.
 
 ## Start and verify
 
@@ -46,7 +46,7 @@ docker compose exec app node -e "fetch('http://127.0.0.1:3000/health').then(r=>r
 
 The image has a loopback healthcheck. Confirm direct public UI/config/health/media requests are denied, genuine ingress-authenticated Discord requests receive the built frontend, room/library requests still require app sessions, unsigned interactions return 401, and backend Jellyfin authentication succeeds. Check the HTTPS route separately from internal health; an edge redirect means Discord access remains unverified.
 
-Complete [Discord setup](discord-setup.md), register commands, and test the same Activity with two real Discord users. Verify video/audio, pause/seek synchronization, audio/subtitle choices, host handoff, logout revocation, and a restart. A healthcheck or unit test does not establish Discord client playback compatibility.
+Complete [Discord setup](discord-setup.md), register commands, and test the same Activity with two real Discord users. Verify video/audio, pause/seek synchronization, audio/subtitle choices, next/previous episode and reconnect behavior, logout revocation, and a restart. A healthcheck or unit test does not establish Discord client playback compatibility.
 
 ## Updates
 

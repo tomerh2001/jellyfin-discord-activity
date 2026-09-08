@@ -13,7 +13,7 @@ Create an application at [Discord Developer Portal](https://discord.com/develope
 | OAuth2 → Client Secret | Backend `DISCORD_CLIENT_SECRET` or its `_FILE` setting |
 | Bot → Token | Backend `DISCORD_BOT_TOKEN` or its `_FILE` setting |
 | OAuth2 → Redirects | Placeholder `https://127.0.0.1` |
-| Activities | Enabled for desktop/web |
+| Activities | Enabled for Web, iOS and Android |
 | Activities → URL Mappings | Prefix `/`, target `watch.example.com` (no scheme) |
 | Installation → Installation Contexts | Guild Install |
 | Installation → Default Install Settings | Scopes `bot`, `applications.commands`; permissions View Channels and Connect (`1049600`) |
@@ -58,11 +58,13 @@ With no server ID, the script registers globally and preserves Discord's auto-cr
 1. Join a voice channel and open its text chat.
 2. Run `/watch`, or right-click a user/message → Apps → Watch Jellyfin.
 3. Authenticate inside the Activity. Other viewers join the same running Activity.
-4. The first connected participant becomes host. Browse the shared library and choose a movie or episode.
-5. Prepare playback, then press Play. Viewers may need one local click to allow audio/autoplay.
-6. Test play, pause, seek, selected audio/subtitles, and host departure with two people.
+4. Connect a personal Jellyfin account or explicitly choose the available community account.
+5. Browse native Jellyfin and play a title. Friends join the running Activity and its SyncPlay group. A phone may need one tap to enable audio.
+6. Test playback, pause/seek, next/previous episode, personal tracks and reconnects with two people.
 
-`/jellyfin play query:...` searches movies and episodes and offers a selection menu for multiple results. `pause`, `resume`, `seek seconds:...`, and `stop` require the connected host. `now` is available to participants. Playback commands find the caller's voice channel even when issued from another channel in the same server.
+`/jellyfin play query:...` searches movies and episodes and offers a selection menu for multiple results. `pause`, `resume`, `seek seconds:...`, `next`, `previous`, `stop` and `now` operate through the caller's live native player. Commands find the caller's voice channel even when issued elsewhere in the same server. Use **Invite friends** to open Discord's native invite dialog; channel permissions still apply.
+
+Enable each mobile platform separately and test the actual iOS and Android Discord clients. Responsive browser tests do not establish operating-system fullscreen, background, picture-in-picture or codec behavior.
 
 ## Networking checks
 

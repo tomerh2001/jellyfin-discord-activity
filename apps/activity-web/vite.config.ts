@@ -9,7 +9,6 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@app/shared/protocol": path.resolve(currentDir, "../../packages/shared/src/protocol.ts"),
       "@app/shared": path.resolve(currentDir, "../../packages/shared/src/index.ts")
     }
   },
@@ -18,20 +17,8 @@ export default defineConfig({
     proxy: {
       "/api": "http://localhost:3000",
       "/health": "http://localhost:3000",
-      "/media": "http://localhost:3000",
-      "/ws": {
-        target: "ws://localhost:3000",
-        ws: true
-      }
-    }
-  },
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          hls: ["hls.js"]
-        }
-      }
+      "/jellyfin-web": "http://localhost:3000",
+      "/jf": { target: "http://localhost:3000", ws: true }
     }
   },
   test: {

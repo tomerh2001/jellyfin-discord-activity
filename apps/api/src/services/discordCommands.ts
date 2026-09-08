@@ -8,12 +8,14 @@ export const discordCommands = [
       { name: "play", description: "Find a movie or episode to watch", type: 1, options: [
         { name: "query", description: "Movie or episode title", type: 3, required: true, min_length: 1, max_length: 200 }
       ] },
-      { name: "pause", description: "Pause playback (host only)", type: 1 },
-      { name: "resume", description: "Resume playback (host only)", type: 1 },
-      { name: "seek", description: "Jump to a position and pause (host only)", type: 1, options: [
+      { name: "pause", description: "Pause the SyncPlay party", type: 1 },
+      { name: "resume", description: "Resume the SyncPlay party", type: 1 },
+      { name: "seek", description: "Seek the party to a position", type: 1, options: [
         { name: "seconds", description: "Position in seconds", type: 10, required: true, min_value: 0, max_value: 86400 }
       ] },
-      { name: "stop", description: "Pause and return to the start (host only)", type: 1 },
+      { name: "stop", description: "Stop party playback", type: 1 },
+      { name: "next", description: "Play the next item or episode", type: 1 },
+      { name: "previous", description: "Play the previous item or episode", type: 1 },
       { name: "now", description: "Show the current movie or episode", type: 1 }
     ]
   }
