@@ -1,11 +1,12 @@
 # API and native gateway
 
-Application API requests require `Authorization: Bearer <appToken>` after Discord OAuth and authoritative Activity-instance verification. Production also requires the configured ingress proof. Never put real Jellyfin tokens in browser requests.
+Account, party and native-launch API requests require `Authorization: Bearer <appToken>` after Discord OAuth and authoritative Activity-instance verification. Config, initial exchange, session recovery and signed interactions use the authentication described below. Production also requires the configured ingress proof, except for the independently signed interaction endpoint. Never put real Jellyfin tokens in browser requests.
 
 | Route | Purpose |
 | --- | --- |
 | GET `/api/config` | Public application ID and origin, behind ingress proof |
 | POST `/api/discord/exchange` | Exchange an SDK code and validate instance membership |
+| POST `/api/discord/resume` | Verify an existing in-memory Discord OAuth bearer and issue a fresh app session |
 | GET `/api/me` | Current Discord identity/session |
 | POST `/api/logout` | Revoke app session, sockets and active streams |
 | GET `/api/connections` | Saved connection metadata, preferred selection and community availability |
@@ -19,6 +20,10 @@ Application API requests require `Authorization: Bearer <appToken>` after Discor
 | POST `/api/party` | Bind/change the Activity to `{connectionId}` |
 | POST `/api/native/launch` | Create a viewer gateway with `{connectionId,deviceId}` |
 | POST `/api/discord/interactions` | Independently signed Discord commands |
+
+`/api/discord/resume` uses `Authorization: Bearer <discordOAuthAccessToken>`, not an app token. Its JSON body is `{instanceId,userId,guildId?,channelId?}`. The backend verifies the OAuth grant's application, `identify` scope and expiration through Discord, confirms the current user independently, and checks the own application's live Activity instance, participant list, channel/guild and allowlist. A claimed identity or an expired app token alone cannot recover access. This route retains ingress authentication and returns private/no-store responses.
+
+Successful recovery returns the same response shape as exchange: `{appToken,discordAccessToken,user,expiresAt}`. The parent uses only the OAuth token already held in document memory and does not repeat SDK authorization/authentication on its authenticated connection. Concurrent rejected requests share one recovery attempt; failed proof grants no session. Leave disables automatic recovery and revokes a late session if recovery completes after disposal. Old server sessions or native queues are not restored from storage.
 
 `/api/native/launch` returns opaque gateway credentials for a source/origin/nonce-checked message to the bundled client. It does not return the Jellyfin access token. `/jf/<capability>/…` proxies allowed native APIs, artwork, playlists and media; `/jf/<capability>/socket` bridges the native Jellyfin WebSocket. Every capability is tied to a live app session and a specific party/viewer. It is a bearer credential and must be excluded from logs.
 

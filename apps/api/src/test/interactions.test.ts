@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
 import { verifyInteractionSignature } from "../services/interactionSignature.js";
@@ -10,6 +10,7 @@ function signed(body: string, timestamp = String(Math.floor(Date.now() / 1000)))
   return { "content-type": "application/json", "x-signature-timestamp": timestamp,
     "x-signature-ed25519": sign(null, Buffer.from(timestamp + body), privateKey).toString("hex") };
 }
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("Discord signed interactions", () => {
   it("rejects tampering, invalid keys and stale requests", () => {
@@ -38,6 +39,26 @@ describe("Discord signed interactions", () => {
       expect((await app.inject({ method: "POST", url: "/api/discord/interactions", payload, headers: signed(payload) })).json()).toEqual({ type: 12 });
       const denied = JSON.stringify({ ...interaction, id: "denied", guild_id: "other" });
       expect((await app.inject({ method: "POST", url: "/api/discord/interactions", payload: denied, headers: signed(denied) })).json()).toMatchObject({ type: 4, data: { flags: 64 } });
+    } finally { await app.close(); }
+  });
+  it("handles an explicit Activity entry point without posting or editing any channel message", async () => {
+    const outbound = vi.fn(async () => { throw new Error("Unexpected outbound Discord request"); });
+    vi.stubGlobal("fetch", outbound);
+    const app = await buildApp(loadEnv({ NODE_ENV: "test", DISCORD_PUBLIC_KEY: publicHex, DISCORD_ALLOWED_GUILD_IDS: "allowed" }));
+    try {
+      expect(outbound).not.toHaveBeenCalled();
+      const interaction = { id: "entry-launch", application_id: "dev-client-id", type: 2, token: "test-interaction-token",
+        guild_id: "allowed", channel_id: "chosen-channel", member: { user: { id: "user" } },
+        data: { type: 4, name: "Launch" } };
+      const payload = JSON.stringify(interaction);
+      const invoke = () => app.inject({ method: "POST", url: "/api/discord/interactions", payload, headers: signed(payload) });
+      expect((await invoke()).json()).toEqual({ type: 12 });
+      expect((await invoke()).json()).toEqual({ type: 12 });
+      const denied = JSON.stringify({ ...interaction, id: "outside-entry", guild_id: "other" });
+      expect((await app.inject({ method: "POST", url: "/api/discord/interactions", payload: denied, headers: signed(denied) })).json())
+        .toMatchObject({ type: 4, data: { flags: 64, allowed_mentions: { parse: [] } } });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(outbound).not.toHaveBeenCalled();
     } finally { await app.close(); }
   });
 });

@@ -17,12 +17,12 @@ jobs:
         with:
           node-version: 22
       - run: node native-client/build.mjs
-      - run: node --test native-client/test/*.test.mjs
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
+      - run: node --test native-client/test/*.test.mjs
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint

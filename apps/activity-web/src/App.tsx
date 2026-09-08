@@ -1,51 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { exchangeDiscordCode, getPublicConfig, logout } from "./api/client.js";
+import { logout } from "./api/client.js";
 import { getConnections, getParty, joinParty, launchNative, matchesPartyServer, savePreference, type Connection, type Connections, type NativeLaunch, type Party } from "./api/native.js";
-import type { DiscordExchangeResponse } from "./api/types.js";
-import { authenticateDiscord, authorizeDiscord, closeDiscordActivity, getConnectedParticipants, initializeDiscord, type ActivityDiscordContext } from "./discord/sdk.js";
+import { closeDiscordActivity, getConnectedParticipants } from "./discord/sdk.js";
+import { clearActivitySession, startActivitySession, resumeActivitySession, StartupTimeout, type ActivitySession as Session } from "./discord/session.js";
+import { onSessionRejected } from "./api/sessionRecovery.js";
 import type { ActivityParticipant } from "./discord/participants.js";
 import { NativeClient } from "./native/NativeClient.js";
 import { ConnectionsPanel } from "./native/ConnectionsPanel.js";
-
-type Session = { discord: ActivityDiscordContext; exchange: DiscordExchangeResponse };
-
-async function startSession(): Promise<Session> {
-  const config = await getPublicConfig();
-  const discord = await initializeDiscord(config);
-  const authorization = await authorizeDiscord(discord, config);
-  const exchange = await exchangeDiscordCode({
-    code: authorization.code, instanceId: discord.instanceId,
-    ...(discord.guildId ? { guildId: discord.guildId } : {}),
-    ...(discord.channelId ? { channelId: discord.channelId } : {}),
-    ...(discord.isMock && discord.user ? { mockUser: discord.user } : {})
-  });
-  try {
-    await authenticateDiscord(discord, exchange.discordAccessToken ?? authorization.discordAccessToken);
-  } catch {
-    await logout(exchange.appToken).catch(() => undefined);
-    throw new Error("Discord could not authorize this Activity. Close it and open /watch again.");
-  }
-  return { discord, exchange };
-}
+import { fullscreenUnavailable, useActivityPresentation } from "./native/useActivityPresentation.js";
 
 export function App() {
-  // StrictMode can replay effects. A single promise keeps the RPC authorization
-  // and SDK instance stable for the lifetime of this Activity document.
-  const startup = useRef<Promise<Session> | null>(null);
   const [session, setSession] = useState<Session>();
-  const [error, setError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState("");
+  const activeSession = useRef<Session | undefined>(undefined);
+  const needsResume = useRef(false);
+  const autoResumeUsed = useRef(false);
+  const resumePending = useRef(false);
+  useEffect(() => onSessionRejected(token => {
+    if (activeSession.current?.exchange.appToken !== token || resumePending.current) return;
+    needsResume.current = true;
+    setSession(undefined);
+    if (autoResumeUsed.current) { setError("Discord interrupted the connection. Try connecting again."); return; }
+    autoResumeUsed.current = true;
+    resumePending.current = true;
+    setAttempt(value => value + 1);
+  }), []);
   useEffect(() => {
     let cancelled = false;
-    startup.current ??= startSession();
-    void startup.current.then(value => { if (!cancelled) setSession(value); }).catch(() => { if (!cancelled) setError(true); });
+    resumePending.current = needsResume.current;
+    void (needsResume.current ? resumeActivitySession() : startActivitySession()).then(value => {
+      if (!cancelled) { activeSession.current = value; needsResume.current = false; setError(""); setSession(value); }
+    }).catch(cause => {
+      if (!cancelled) setError(cause instanceof StartupTimeout || (needsResume.current && cause instanceof Error) ? cause.message : "The connection was interrupted. Try connecting again.");
+    }).finally(() => { if (!cancelled) resumePending.current = false; });
     return () => { cancelled = true; };
-  }, []);
-  if (error) return <main className="centered"><h1>Open Jellyfin Watch in Discord</h1><p>Close this Activity and open /watch again to connect.</p></main>;
+  }, [attempt]);
+  if (error) return <main className="centered"><h1>Could not connect</h1><p role="alert">{error}</p><button onClick={() => { setError(""); setAttempt(value => value + 1); }}>Try connecting again</button></main>;
   if (!session) return <main className="centered" role="status"><img className="welcome-logo" src="/branding/jellyfin-watch-icon.png" alt="" /><h1>Jellyfin Watch</h1><p>Connecting to Discord…</p></main>;
-  return <ActivityShell session={session} />;
+  return <ActivityShell key={session.exchange.appToken} session={session} onLeaving={leaving => { activeSession.current = leaving ? undefined : session; }} />;
 }
 
-function ActivityShell({ session: { discord, exchange } }: { session: Session }) {
+function ActivityShell({ session: { discord, exchange }, onLeaving }: { session: Session; onLeaving: (leaving: boolean) => void }) {
   const token = exchange.appToken;
   const [connections, setConnections] = useState<Connections>();
   const [party, setParty] = useState<Party | null>(null);
@@ -62,6 +58,12 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
     ...(exchange.user.avatar !== undefined ? { avatar: exchange.user.avatar } : {}) }]);
   const [closed, setClosed] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [videoActive, setVideoActive] = useState(false);
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [presentationNotice, setPresentationNotice] = useState("");
+  const shell = useRef<HTMLElement>(null);
+  const { presentation, fullscreen, toggleFullscreen } = useActivityPresentation(discord, !closed);
+  const watching = Boolean(launch && videoActive);
   const leavePending = useRef(false);
   const selectPending = useRef(false);
   const initialLoad = useRef(false);
@@ -154,23 +156,44 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
   }
   async function leave() {
     if (leavePending.current) return;
+    onLeaving(true);
     leavePending.current = true; setLeaving(true); setError("");
-    try { await logout(token); } catch { setError("Could not confirm sign-out. Try leaving again."); leavePending.current = false; setLeaving(false); return; }
+    try { await logout(token); } catch { setError("Could not confirm sign-out. Try leaving again."); leavePending.current = false; setLeaving(false); onLeaving(false); return; }
+    clearActivitySession();
     setClosed(true); setLaunch(undefined); setSelection(undefined); setConnections(undefined); setParty(null); setParticipants([]);
     try { closeDiscordActivity(discord); } catch { setError("You are signed out. Close this Activity before opening /watch again."); }
     setLeaving(false);
   }
+  function requestFullscreen() {
+    if (!shell.current) return;
+    // Request immediately from this click: an asynchronous SDK hop loses browser
+    // user activation and cannot force the enclosing Discord window fullscreen.
+    void toggleFullscreen(shell.current).then(() => { setControlsOpen(false); setPresentationNotice(""); })
+      .catch(() => setPresentationNotice(fullscreenUnavailable));
+  }
+  const watchControls = <nav aria-label="Watch party">
+    <button disabled={leaving} onClick={() => { void invite(); }}>Invite friends</button>
+    <button disabled={leaving || pending} onClick={() => { setControlsOpen(false); setChangingServer(false); setAccountsOpen(true); }}>Accounts</button>
+    <button disabled={leaving || pending || !party} onClick={() => { setControlsOpen(false); setChangingServer(true); setAccountsOpen(true); }}>Change server</button>
+    <button onClick={requestFullscreen}>{fullscreen ? "Exit fullscreen" : "Fullscreen"}</button>
+    <button disabled={leaving} onClick={() => { void leave(); }}>{leaving ? "Leaving…" : "Leave watch party"}</button>
+  </nav>;
   if (closed) return <main className="centered"><h1>You left the watch party</h1><p>Open /watch in Discord to join again.</p>{error && <p role="alert">{error}</p>}</main>;
-  return <main className="activity-shell">
-    <header className="activity-toolbar">
+  return <main ref={shell} className="activity-shell" data-watching={watching} data-preview={presentation.preview} data-layout={presentation.layout}>
+    {!watching && <header className="activity-toolbar">
       <div className="brand"><img src="/branding/jellyfin-watch-icon.png" alt="" /><div><strong>Jellyfin Watch</strong><span>{selection ? `${selection.serverName} · ${selection.jellyfinUsername}` : "Watch together"}</span></div></div>
       <div className="participants" aria-label={`${participants.length} viewers`}>{participants.slice(0, 5).map(user => <span key={user.id} title={user.globalName || user.username} aria-label={user.globalName || user.username}>
         {user.avatar ? <img src={`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=64`} alt="" /> : (user.globalName || user.username).slice(0, 1).toUpperCase()}</span>)}</div>
-      <nav aria-label="Watch party"><button disabled={leaving} onClick={() => { void invite(); }}>Invite friends</button><button disabled={leaving || pending} onClick={() => { setChangingServer(false); setAccountsOpen(true); }}>Accounts</button><button disabled={leaving || pending || !party} onClick={() => { setChangingServer(true); setAccountsOpen(true); }}>Change server</button><button disabled={leaving} onClick={() => { void leave(); }}>{leaving ? "Leaving…" : "Leave watch party"}</button></nav>
-    </header>
+      {watchControls}
+    </header>}
+    {watching && !presentation.preview && <div className="watch-controls" onKeyDown={event => { if (event.key === "Escape") { setControlsOpen(false); event.stopPropagation(); } }}>
+      <button className="watch-controls-toggle" aria-label="Watch party controls" aria-expanded={controlsOpen} aria-controls="watch-controls-menu" onClick={() => setControlsOpen(!controlsOpen)}><span aria-hidden="true">⋯</span></button>
+      {controlsOpen && <div id="watch-controls-menu" className="watch-controls-menu">{watchControls}</div>}
+    </div>}
+    {presentationNotice && <div className="presentation-notice" role="alert">{presentationNotice}<button onClick={() => setPresentationNotice("")}>Dismiss</button></div>}
     {error && <div className="shell-notice" role="alert">{error}<button onClick={() => { setError(""); void refresh().then(() => setAccountsOpen(true)).catch(() => setError("Could not load your accounts. Try again.")); }}>Try again</button></div>}
     <div className="activity-content">
-    {launch && <NativeClient key={launch.accessToken} launch={launch} onStatus={nativeStatus} />}
+    {launch && <NativeClient key={launch.accessToken} launch={launch} onStatus={nativeStatus} onVideoChange={setVideoActive} presentation={presentation} />}
     {!launch && !connections && <div className="centered" role="status">Loading your accounts…</div>}
     {pending && <div className="connecting-overlay" role="status">Joining your watch party…</div>}
     {connections && (accountsOpen || !launch) && <div className={launch ? "accounts-overlay" : "accounts-page"}>
@@ -184,7 +207,7 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
       <div className="confirmation-actions"><button disabled={pending} onClick={() => setProposedServer(undefined)}>Keep current server</button>
         <button className="primary-button" disabled={pending} onClick={() => { void select(proposedServer, true).catch(() => { setProposedServer(undefined); setError("Could not change the party’s server. Choose an account to try again."); }); }}>Confirm change server</button></div>
     </section></div>}
-    {launch && <div className="party-status" role="status">{status}</div>}
+    {launch && !watching && <div className="party-status" role="status">{status}</div>}
     </div>
   </main>;
 }

@@ -15,7 +15,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
 COPY . .
-RUN pnpm build
+RUN pnpm build && node native-client/precompress.mjs apps/activity-web/dist
 RUN pnpm deploy --filter @app/api --prod --legacy /prod
 
 FROM node:24-alpine AS runtime

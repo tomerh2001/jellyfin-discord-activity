@@ -9,7 +9,7 @@ const interactionSchema = z.object({
   id: z.string().min(1), application_id: z.string(), type: z.number(), token: z.string().optional(),
   guild_id: z.string().optional(), channel_id: z.string().optional(),
   member: z.object({ user: z.object({ id: z.string() }) }).optional(),
-  data: z.object({ name: z.string().optional(), custom_id: z.string().optional(), values: z.array(z.string()).optional(),
+  data: z.object({ name: z.string().optional(), type: z.number().int().optional(), custom_id: z.string().optional(), values: z.array(z.string()).optional(),
     options: z.array(z.object({ name: z.string(), options: z.array(optionSchema).optional() })).optional()
   }).optional()
 });
@@ -46,8 +46,11 @@ export const discordInteractionRoutes: FastifyPluginAsync = async (app) => {
     const cached = handled.get(interaction.id);
     if (cached) return cached.response;
     if (handled.size >= 10000) return reply.code(429).send({ error: "Too many interactions" });
-    const launch = interaction.type === 2 && ["watch", "Watch Jellyfin"].includes(interaction.data?.name ?? "");
+    const launch = interaction.type === 2 && (interaction.data?.type === 4
+      || ["watch", "Watch Jellyfin"].includes(interaction.data?.name ?? ""));
     if (launch) {
+      // The user invoked an entry point, slash command or context menu in this
+      // channel. Launch only: never create a public invitation/follow-up here.
       const response = { type: 12 };
       handled.set(interaction.id, { expiresAt: now + 300_000, response });
       return response;

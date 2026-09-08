@@ -4,6 +4,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import WebSocket, { type RawData } from "ws";
 import { upstreamWebSocketOptions } from "./upstreamPolicy.js";
 import { NativeError, nativeAuthorization, nativeSessionId, type NativePartyService, type NativeViewer } from "./nativeParty.js";
+import { isNativeQueuePath, nativeQueueShape } from "./nativeQueueDiagnostics.js";
 
 const ID = "[a-zA-Z0-9_-]{1,128}";
 const SECRET_KEYS = new Set(["apikey", "api_key", "access_token", "accesstoken", "token", "password", "pw", "authorization", "x-emby-token", "x-mediabrowser-token"]);
@@ -250,6 +251,9 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
     clearTimeout(timeout);
     if (!response.ok) {
       await response.body?.cancel();
+      if (isNativeQueuePath(path)) {
+        request.log.warn({ code: "jellyfin_request_failed", upstreamStatus: response.status, ...nativeQueueShape(request) }, "Native queue request rejected by Jellyfin");
+      }
       if (response.status === 401) await service.revoke(viewer);
       if (response.status === 403 && /^\/SyncPlay\/Join$/i.test(path)) throw new NativeError("syncplay_join_not_allowed", 403);
       const status = response.status >= 400 && response.status <= 599 ? response.status : 502;

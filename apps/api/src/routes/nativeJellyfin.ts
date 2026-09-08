@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { bridgeNativeSocket, prepareNativeSocket, proxyNativeRequest, type PreparedNativeSocket } from "../services/nativeGateway.js";
 import { getNativePartyService, NativeError, type NativeViewer } from "../services/nativeParty.js";
 import { nativeRouteError } from "./nativeParty.js";
+import { isNativeQueuePath, nativeQueueShape } from "../services/nativeQueueDiagnostics.js";
 
 export const nativeJellyfinRoutes: FastifyPluginAsync = async (app) => {
   const service = getNativePartyService(app);
@@ -10,6 +11,14 @@ export const nativeJellyfinRoutes: FastifyPluginAsync = async (app) => {
     reply.header("Content-Security-Policy", "sandbox; default-src 'none'; frame-ancestors 'none'");
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Cache-Control", "no-store");
+  });
+  app.addHook("onError", async (request, _reply, error) => {
+    if (!isNativeQueuePath(request.url)) return;
+    // Parser errors happen before the gateway handler. Record their classification,
+    // not the parser's message, which can contain fragments of the rejected body.
+    const code = ["FST_ERR_CTP_EMPTY_JSON_BODY", "FST_ERR_CTP_INVALID_JSON_BODY", "FST_ERR_CTP_INVALID_MEDIA_TYPE", "FST_ERR_CTP_BODY_TOO_LARGE"]
+      .includes(error.code) ? error.code : "native_queue_request_rejected";
+    request.log.warn({ code, ...nativeQueueShape(request) }, "Native queue request rejected before forwarding");
   });
   const authorized = new WeakMap<object, { viewer: NativeViewer; upstream: PreparedNativeSocket; release: () => void }>();
   app.get<{ Params: { capability: string } }>("/jf/:capability/socket", {
@@ -68,7 +77,12 @@ export const nativeJellyfinRoutes: FastifyPluginAsync = async (app) => {
         const path = raw.slice(prefix.length, separator === -1 ? undefined : separator);
         const query = new URLSearchParams(separator === -1 ? "" : raw.slice(separator + 1));
         return await proxyNativeRequest(service, viewer, request, reply, path, query);
-      } catch (error) { return nativeRouteError(error, reply); }
+      } catch (error) {
+        if (isNativeQueuePath(request.url) && error instanceof NativeError) {
+          request.log.warn({ code: error.code, ...nativeQueueShape(request) }, "Native queue request rejected before forwarding");
+        }
+        return nativeRouteError(error, reply);
+      }
     }
   });
 };

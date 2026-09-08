@@ -306,6 +306,33 @@ describe("native Jellyfin gateway", () => {
     expect(calls.some((c) => c.path === "/SyncPlay/SetNewQueue")).toBe(false);
   });
 
+  it("distinguishes invalid, empty and oversized native queues without forwarding any mutation", async () => {
+    const { data } = await launch();
+    for (const [payload, code] of [
+      [{ PlayingQueue: "private-body-value" }, "native_invalid_queue"],
+      [{ PlayingQueue: [null] }, "native_invalid_queue"],
+      [{ PlayingQueue: [] }, "native_queue_empty"],
+      [{ PlayingQueue: Array(501).fill(ITEM) }, "native_queue_too_large"]
+    ] as const) {
+      const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`, payload });
+      expect(result.statusCode).toBe(400);
+      expect(result.json()).toMatchObject({ error: { code } });
+      expect(result.headers["x-application-error-code"]).toBe(code);
+      expect(result.body).not.toContain("private-body-value");
+      expect(result.body).not.toContain(ITEM);
+    }
+    expect(calls.some((c) => c.path === "/SyncPlay/SetNewQueue")).toBe(false);
+  });
+
+  it("forwards the native JSON queue format used by desktop and mobile clients", async () => {
+    const { data } = await launch();
+    const payload = { PlayingQueue: Array(37).fill(ITEM), PlayingItemPosition: 0, StartPositionTicks: 0 };
+    const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`,
+      headers: { "content-type": "application/json; charset=UTF-8" }, payload: JSON.stringify(payload) });
+    expect(result.statusCode).toBe(204);
+    expect(calls.find((c) => c.path === "/SyncPlay/SetNewQueue")?.body).toEqual(payload);
+  });
+
   it("fails closed when Discord membership renewal fails", async () => {
     const { data } = await launch();
     service.dependencies.membership = vi.fn(async () => { throw new Error("not a participant"); });
@@ -322,8 +349,13 @@ describe("native Jellyfin gateway", () => {
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now + 31_000);
     await service.sweep();
+    expect(service.viewers.has(data.accessToken)).toBe(true);
+    expect(service.parties.size).toBe(1);
+    expect((await app.inject({ url: `${data.baseUrl}/Users/Me` })).statusCode).toBe(200);
+    clock.mockReturnValue(now + 121_000);
+    await service.sweep();
     expect(service.viewers.has(data.accessToken)).toBe(false);
-    clock.mockReturnValue(now + 62_000);
+    clock.mockReturnValue(now + 242_000);
     await service.sweep();
     expect(service.parties.size).toBe(0);
     expect(calls.filter((c) => c.path === "/SyncPlay/Leave").length).toBeGreaterThanOrEqual(2);

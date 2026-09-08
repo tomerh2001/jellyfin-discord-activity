@@ -16,6 +16,21 @@ button:hover:not(:disabled) { background: #383838; }
 button:disabled { opacity: .5; cursor: default; }
 button:focus-visible, input:focus-visible { outline: 2px solid #00a4dc; outline-offset: 3px; }
 .activity-shell { display: flex; flex-direction: column; width: 100%; height: 100dvh; overflow: hidden; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+.activity-shell:fullscreen { width: 100vw; height: 100dvh; background: #000; }
+.activity-shell[data-watching="true"] { padding: 0; background: #000; }
+.activity-shell[data-watching="true"] .native-client { background: #000; }
+.watch-controls { position: absolute; top: max(.4rem, var(--safe-top)); right: max(.4rem, var(--safe-right)); z-index: 25; }
+.watch-controls-toggle { display: grid; place-items: center; width: 2.5rem; height: 2.5rem; padding: 0; font-size: 1.5rem; line-height: 1; background: #17171780; border-color: #ffffff30; opacity: .45; }
+.watch-controls-toggle:hover, .watch-controls-toggle:focus-visible, .watch-controls-toggle[aria-expanded="true"] { opacity: 1; }
+.watch-controls-menu { position: absolute; right: 0; top: calc(100% + .3rem); width: max-content; max-width: calc(100vw - 1rem); padding: .4rem; border: 1px solid #444; border-radius: .65rem; background: #171717f5; box-shadow: 0 .5rem 2rem #0008; }
+.watch-controls-menu nav { display: grid; gap: .3rem; }
+.watch-controls-menu button { text-align: left; min-height: 2.75rem; }
+.presentation-notice { position: absolute; bottom: max(1rem, var(--safe-bottom)); left: max(1rem, var(--safe-left)); right: max(1rem, var(--safe-right)); z-index: 35; display: flex; align-items: center; gap: .75rem; padding: .8rem; background: #242424f5; border: 1px solid #555; border-radius: .6rem; font-size: .9rem; }
+.presentation-notice button { margin-left: auto; }
+.activity-shell[data-watching="true"][data-preview="true"] .shell-notice,
+.activity-shell[data-watching="true"][data-preview="true"] .presentation-notice,
+.activity-shell[data-watching="true"][data-preview="true"] .accounts-overlay,
+.activity-shell[data-watching="true"][data-preview="true"] .confirmation-overlay { display: none; }
 .activity-toolbar { display: flex; gap: 1rem; align-items: center; padding: .5rem .8rem; background: #171717; border-bottom: 1px solid #353535; flex-shrink: 0; }
 .brand { display: flex; gap: .65rem; align-items: center; min-width: 0; margin-right: auto; }
 .brand img { width: 2.4rem; height: 2.4rem; border-radius: .6rem; }

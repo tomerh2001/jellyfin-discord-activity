@@ -3,6 +3,7 @@ import {
   type DiscordExchangeRequest, type DiscordExchangeResponse, type PublicEnv
 } from "@app/shared";
 import { env } from "../env.js";
+import { withRequestTimeout } from "./requestTimeout.js";
 
 function apiUrl(path: string): string {
   return `${env.apiBaseUrl}${path}`;
@@ -30,46 +31,41 @@ async function parseApiError(response: Response): Promise<Error> {
 }
 
 export async function getPublicConfig(signal?: AbortSignal): Promise<PublicEnv> {
-  const response = await fetch(apiUrl("/api/config"), signal ? { signal } : undefined);
-
-  if (!response.ok) {
-    throw await parseApiError(response);
-  }
-
-  const config = publicEnvSchema.parse(await response.json());
-
-  return {
-    ...config,
-    publicDiscordClientId: env.publicDiscordClientId || config.publicDiscordClientId
-  };
+  return withRequestTimeout(signal, 15_000, async requestSignal => {
+    const response = await fetch(apiUrl("/api/config"), { signal: requestSignal });
+    if (!response.ok) throw await parseApiError(response);
+    const config = publicEnvSchema.parse(await response.json());
+    return { ...config, publicDiscordClientId: env.publicDiscordClientId || config.publicDiscordClientId };
+  });
 }
 
 export async function exchangeDiscordCode(input: DiscordExchangeRequest, signal?: AbortSignal): Promise<DiscordExchangeResponse> {
-  const response = await fetch(apiUrl("/api/discord/exchange"), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(input),
-    ...(signal ? { signal } : {})
+  return withRequestTimeout(signal, 40_000, async requestSignal => {
+    const response = await fetch(apiUrl("/api/discord/exchange"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input), signal: requestSignal
+    });
+    if (!response.ok) throw await parseApiError(response);
+    return discordExchangeResponseSchema.parse(await response.json());
   });
+}
 
-  if (!response.ok) {
-    throw await parseApiError(response);
-  }
-
-  return discordExchangeResponseSchema.parse(await response.json());
+export async function resumeDiscordSession(accessToken: string, input: { instanceId: string; guildId?: string; channelId?: string; userId: string }): Promise<DiscordExchangeResponse> {
+  return withRequestTimeout(undefined, 45_000, async requestSignal => {
+    const response = await fetch(apiUrl("/api/discord/resume"), {
+      method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(input), signal: requestSignal
+    });
+    if (!response.ok) throw await parseApiError(response);
+    return discordExchangeResponseSchema.parse(await response.json());
+  });
 }
 
 export async function logout(appToken: string): Promise<void> {
-  const response = await fetch(apiUrl("/api/logout"), {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${appToken}`
-    }
+  await withRequestTimeout(undefined, 15_000, async requestSignal => {
+    const response = await fetch(apiUrl("/api/logout"), {
+      method: "POST", headers: { Authorization: `Bearer ${appToken}` }, signal: requestSignal
+    });
+    if (!response.ok) throw await parseApiError(response);
   });
-
-  if (!response.ok) {
-    throw await parseApiError(response);
-  }
 }

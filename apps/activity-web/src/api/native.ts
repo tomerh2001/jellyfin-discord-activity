@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { env } from "../env.js";
+import { withRequestTimeout } from "./requestTimeout.js";
+import { notifySessionRejected } from "./sessionRecovery.js";
 
 const connectionSchema = z.object({
   id: z.string(), serverUrl: z.string(), serverId: z.string(), serverName: z.string(),
@@ -29,16 +31,22 @@ const quickConnectSchema = z.object({ id: z.string(), code: z.string(), expiresA
 export type QuickConnect = z.infer<typeof quickConnectSchema>;
 
 async function request(path: string, token: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<unknown> {
-  const response = await fetch(`${env.apiBaseUrl}${path}`, {
-    method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }), ...(signal ? { signal } : {})
+  return withRequestTimeout(signal, 40_000, async requestSignal => {
+    const response = await fetch(`${env.apiBaseUrl}${path}`, {
+      method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: requestSignal
+    });
+    const payload: unknown = await response.json().catch((error: unknown) => {
+      if (requestSignal.aborted) throw error;
+      return undefined;
+    });
+    if (!response.ok) {
+      const error = z.object({ error: z.object({ message: z.string(), code: z.string().optional() }) }).safeParse(payload);
+      if (response.status === 401 && error.success && error.data.error.code === "invalid_app_token") notifySessionRejected(token);
+      throw new Error(error.success ? error.data.error.message : `Request failed (${response.status}).`);
+    }
+    return payload;
   });
-  const payload: unknown = await response.json().catch(() => undefined);
-  if (!response.ok) {
-    const error = z.object({ error: z.object({ message: z.string() }) }).safeParse(payload);
-    throw new Error(error.success ? error.data.error.message : `Request failed (${response.status}).`);
-  }
-  return payload;
 }
 
 export async function getConnections(token: string, signal?: AbortSignal) {

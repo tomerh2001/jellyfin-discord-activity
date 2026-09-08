@@ -53,6 +53,8 @@ function standaloneContext(): ActivityDiscordContext {
   };
 }
 
+let initialization: { clientId: string; sdk: DiscordSDK; ready: Promise<void> } | undefined;
+
 export async function initializeDiscord(config: PublicEnv): Promise<ActivityDiscordContext> {
   const hasDiscordFrame = new URLSearchParams(window.location.search).has("frame_id");
 
@@ -64,11 +66,13 @@ export async function initializeDiscord(config: PublicEnv): Promise<ActivityDisc
     return standaloneContext();
   }
 
-  const sdk = new DiscordSDK(config.publicDiscordClientId, {
-    disableConsoleLogOverride: true
-  });
+  if (!initialization || initialization.clientId !== config.publicDiscordClientId) {
+    const sdk = new DiscordSDK(config.publicDiscordClientId, { disableConsoleLogOverride: true });
+    initialization = { clientId: config.publicDiscordClientId, sdk, ready: sdk.ready() };
+  }
+  const { sdk, ready } = initialization;
   const instanceId = sdk.instanceId;
-  await withTimeout(sdk.ready(), 15_000, `Discord SDK did not become ready for application ${config.publicDiscordClientId}. Confirm the Activity is launched from Discord, the Developer Portal Application ID matches PUBLIC_DISCORD_CLIENT_ID, and the Activity URL Mapping points to this HTTPS origin.`);
+  await withTimeout(ready, 15_000, "Discord is taking longer than expected to connect. Try connecting again.");
 
   return {
     instanceId,
@@ -127,6 +131,7 @@ export async function authenticateDiscord(context: ActivityDiscordContext, disco
 export function closeDiscordActivity(context: ActivityDiscordContext): void {
   if (!context.isMock && context.sdk) {
     context.sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Left watch party");
+    if (initialization?.sdk === context.sdk) initialization = undefined;
   }
 }
 

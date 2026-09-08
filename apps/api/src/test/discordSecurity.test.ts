@@ -113,3 +113,58 @@ describe("Activity instance verification", () => {
     await app.close();
   });
 });
+
+
+describe("verified in-document recovery", () => {
+  const grant = { application: { id: applicationId }, scopes: ["identify"], expires: "2099-01-01T00:00:00Z", user: { id: userId, username: "Member" } };
+  async function recover(grantPayload: unknown = grant, currentUser = { id: userId, username: "Member" }, activeInstance: unknown = instance, claimedUser = userId) {
+    const app = await buildApp(loadEnv({ ...envInput, NODE_ENV: "test" }));
+    const upstream = vi.fn()
+      .mockResolvedValueOnce(Response.json(grantPayload))
+      .mockResolvedValueOnce(Response.json(currentUser))
+      .mockResolvedValueOnce(Response.json(activeInstance));
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/discord/resume", headers: { authorization: "Bearer existing-oauth" }, payload: { ...context, userId: claimedUser } });
+      return { response, upstream };
+    } finally { await app.close(); }
+  }
+  it("requires independent application, identity and live membership proof before issuing a fresh session", async () => {
+    const { response, upstream } = await recover();
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ appToken: expect.any(String), discordAccessToken: "existing-oauth", user: { id: userId } });
+    expect(upstream.mock.calls.map(([url]) => url)).toEqual([
+      "https://discord.com/api/v10/oauth2/@me", "https://discord.com/api/users/@me",
+      `https://discord.com/api/v10/applications/${applicationId}/activity-instances/${context.instanceId}`
+    ]);
+    expect(response.headers["cache-control"]).toBe("private, no-store");
+  });
+  it.each([
+    { ...grant, application: { id: "another-app" } },
+    { ...grant, scopes: ["guilds"] },
+    { ...grant, expires: "2000-01-01T00:00:00Z" },
+    { ...grant, expires: "invalid-date" }
+  ])("rejects an unrelated, insufficient or expired authorization %#", async payload => {
+    const { response, upstream } = await recover(payload);
+    expect(response.statusCode).toBe(403); expect(upstream).toHaveBeenCalledTimes(1);
+    expect(response.json().appToken).toBeUndefined();
+  });
+  it("rejects disagreement between grant identity and the current bearer user", async () => {
+    const { response } = await recover(grant, { id: "other-user", username: "Other" });
+    expect(response.statusCode).toBe(403);
+  });
+  it("rejects impersonated UI identity and removed Activity membership", async () => {
+    expect((await recover(grant, grant.user, instance, "other-user")).response.statusCode).toBe(403);
+    expect((await recover(grant, grant.user, { ...instance, users: [] })).response.statusCode).toBe(403);
+  });
+  it("fails closed on a temporary Discord outage without issuing a session", async () => {
+    const app = await buildApp(loadEnv({ ...envInput, NODE_ENV: "test" }));
+    const upstream = vi.fn().mockImplementation(async () => Response.json({}, { status: 503 }));
+    vi.stubGlobal("fetch", upstream);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/discord/resume", headers: { authorization: "Bearer existing-oauth" }, payload: { ...context, userId } });
+      expect(response.statusCode).toBe(503); expect(response.json().appToken).toBeUndefined();
+      expect(upstream).toHaveBeenCalledTimes(2);
+    } finally { await app.close(); }
+  });
+});
