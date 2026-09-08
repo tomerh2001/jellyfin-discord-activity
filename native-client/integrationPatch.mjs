@@ -1,5 +1,32 @@
 /** Adapt native controls at pinned source anchors; keep their elements and routes. */
 export async function patchNativeIntegration(replace) {
+    const videoPlayer = 'src/plugins/htmlVideoPlayer/plugin.js';
+    await replace(videoPlayer,
+        "import Screenfull from 'screenfull';",
+        "import Screenfull from 'screenfull';\nimport toast from 'components/toast/toast';\nimport { isVideoFullscreen, toggleVideoFullscreen } from 'discordActivity/videoFullscreen';");
+    await replace(videoPlayer,
+        '    static onPictureInPictureError(err) {',
+        `    isFullscreen() {
+        return isVideoFullscreen(this.#mediaElement, Screenfull);
+    }
+
+    toggleFullscreen() {
+        return toggleVideoFullscreen(this.#mediaElement, Screenfull, toast);
+    }
+
+    onNativeFullscreenChange = () => {
+        Events.trigger(this, 'fullscreenchange');
+    };
+
+    static onPictureInPictureError(err) {`);
+    for (const [operation, indent] of [['add', '                '], ['remove', '            ']]) {
+        const anchor = `${indent}videoElement.${operation}EventListener('waiting', this.onWaiting);`;
+        await replace(videoPlayer, anchor,
+            anchor + `\n${indent}for (const event of ['webkitbeginfullscreen', 'webkitendfullscreen', 'webkitpresentationmodechanged']) {
+${indent}    videoElement.${operation}EventListener(event, this.onNativeFullscreenChange);
+${indent}}`);
+    }
+
     await replace('src/scripts/libraryMenu.js',
         "import groupSelectionMenu from '../plugins/syncPlay/ui/groupSelectionMenu';\n", '');
     await replace('src/scripts/libraryMenu.js',
