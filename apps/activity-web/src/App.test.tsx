@@ -128,7 +128,7 @@ describe("App", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Logout" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Leave watch party" })).toBeInTheDocument();
     });
   });
 
@@ -223,7 +223,7 @@ describe("App", () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Logout" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Leave watch party" })).toBeInTheDocument();
     });
     expect(screen.queryByText("Jellyfin shared account")).not.toBeInTheDocument();
     expect(screen.queryAllByRole("button", { name: "Link Jellyfin" })).toHaveLength(0);

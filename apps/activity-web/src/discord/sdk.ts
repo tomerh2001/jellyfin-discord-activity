@@ -1,4 +1,4 @@
-import { DiscordSDK } from "@discord/embedded-app-sdk";
+import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { env } from "../env.js";
 import type { PublicEnv } from "../api/types.js";
 import type { ActivityParticipant } from "./participants.js";
@@ -121,6 +121,13 @@ export async function authenticateDiscord(context: ActivityDiscordContext, disco
     ...(auth.user.global_name !== undefined ? { globalName: auth.user.global_name } : {}),
     ...(auth.user.avatar !== undefined ? { avatar: auth.user.avatar } : {})
   };
+}
+
+/** Discord keeps an authenticated RPC socket until the Activity exits. */
+export function closeDiscordActivity(context: ActivityDiscordContext): void {
+  if (!context.isMock && context.sdk) {
+    context.sdk.close(RPCCloseCodes.CLOSE_NORMAL, "Left watch party");
+  }
 }
 
 export async function getConnectedParticipants(context: ActivityDiscordContext): Promise<ActivityParticipant[]> {

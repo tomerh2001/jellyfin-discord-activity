@@ -1,5 +1,5 @@
 import { Activity, LogOut } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   claimRoomHost,
   exchangeDiscordCode,
@@ -24,6 +24,7 @@ import { Loading } from "./components/Loading.js";
 import {
   authenticateDiscord,
   authorizeDiscord,
+  closeDiscordActivity,
   getConnectedParticipants,
   initializeDiscord,
   type ActivityDiscordContext
@@ -45,6 +46,7 @@ type AuthUiState =
   | { status: "idle" }
   | { status: "pending" }
   | { status: "authenticated"; exchange: DiscordExchangeResponse; me: MeResponse }
+  | { status: "closed" }
   | { status: "error"; message: string };
 
 export function App() {
@@ -105,9 +107,14 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
   const [room, setRoom] = useState<RoomResponse["room"] | undefined>();
   const [roomError, setRoomError] = useState<string | undefined>();
   const [stagedMedia, setStagedMedia] = useState<HostStagedMedia | undefined>();
+  const [leaving, setLeaving] = useState(false);
+  const [leaveError, setLeaveError] = useState<string | undefined>();
+  const leavePending = useRef(false);
   const appToken = authState.status === "authenticated" ? authState.exchange.appToken : undefined;
+  const hasLeft = authState.status === "closed";
 
   useEffect(() => {
+    if (hasLeft) return;
     let cancelled = false;
 
     async function refreshParticipants() {
@@ -133,7 +140,7 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [discord]);
+  }, [discord, hasLeft]);
 
   useEffect(() => {
     if (!appToken) return;
@@ -142,8 +149,10 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
     async function refreshRoom() {
       try {
         const response = await getCurrentRoom(appToken!, discord.instanceId, controller.signal);
-        setRoom(response.room);
-        setRoomError(undefined);
+        if (!controller.signal.aborted) {
+          setRoom(response.room);
+          setRoomError(undefined);
+        }
       } catch (error) {
         if (!controller.signal.aborted) {
           setRoomError(error instanceof Error ? error.message : "Could not load room state.");
@@ -195,12 +204,34 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
   }
 
   async function signOut() {
-    if (authState.status === "authenticated") {
+    if (authState.status !== "authenticated" || leavePending.current) return;
+    leavePending.current = true;
+    setLeaving(true);
+    setLeaveError(undefined);
+
+    try {
       await logout(authState.exchange.appToken);
+    } catch {
+      setLeaveError("Could not confirm sign-out. Try leaving again.");
+      leavePending.current = false;
+      setLeaving(false);
+      return;
     }
 
-    setAuthState({ status: "idle" });
+    // A second AUTHORIZE on this authenticated RPC socket is rejected by Discord.
+    // Revoke our session first, then leave the Activity instead of offering re-login.
+    setAuthState({ status: "closed" });
     setJellyfinLinked(false);
+    setRoom(undefined);
+    setRoomError(undefined);
+    setStagedMedia(undefined);
+    setParticipants([]);
+    try {
+      closeDiscordActivity(discord);
+    } catch {
+      setLeaveError("You are signed out. Close this Activity before opening /watch again.");
+    }
+    setLeaving(false);
   }
 
   const discordUserId = authState.status === "authenticated" ? authState.me.discordUser.id : undefined;
@@ -301,15 +332,28 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
     }
   }
 
+  if (hasLeft) {
+    return (
+      <main className="app-shell">
+        <h1>You left the watch party</h1>
+        <p>Open /watch in Discord to join again.</p>
+        {leaveError ? <p role="alert">{leaveError}</p> : null}
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <section className="action-bar">
         <AuthControls
           authState={authState}
+          leaving={leaving}
           onAuthenticate={() => void authenticate()}
           onLogout={() => void signOut()}
         />
       </section>
+
+      {leaveError ? <ErrorPanel title="Could not leave watch party" message={leaveError} /> : null}
 
       {authState.status === "error" ? (
         <ErrorPanel title="Discord authentication failed" message={authState.message} />
@@ -374,15 +418,16 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
 
 type AuthControlsProps = {
   authState: AuthUiState;
+  leaving: boolean;
   onAuthenticate: () => void;
   onLogout: () => void;
 };
 
-function AuthControls({ authState, onAuthenticate, onLogout }: AuthControlsProps) {
+function AuthControls({ authState, leaving, onAuthenticate, onLogout }: AuthControlsProps) {
   if (authState.status === "authenticated") {
     return (
-      <Button icon={<LogOut aria-hidden="true" />} onClick={onLogout}>
-        Logout
+      <Button disabled={leaving} icon={<LogOut aria-hidden="true" />} onClick={onLogout}>
+        {leaving ? "Leaving" : "Leave watch party"}
       </Button>
     );
   }
