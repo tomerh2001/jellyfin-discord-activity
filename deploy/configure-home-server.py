@@ -4,9 +4,11 @@
 Populate discord_client_id, discord_client_secret, discord_bot_token,
 discord_public_key, and discord_guild_id in Home Server / Jellyfin Discord
 Activity. Existing Jellyfin/password/encryption fields are also required.
+Cloudflare Worker attestation mode also requires discord_proxy_edge_secret.
 
     python3 deploy/configure-home-server.py --check
     python3 deploy/configure-home-server.py --apply
+    python3 deploy/configure-home-server.py --apply --proxy-auth-mode cloudflare-worker
 
 No secrets are printed or written into this repository. --apply validates all
 fields and Compose before changing runtime files, then uses filesystem.setacl
@@ -32,12 +34,30 @@ SECRET_FIELDS = (
     "discord_client_secret", "discord_bot_token", "app_session_secret",
     "token_encryption_key", "jellyfin_shared_password",
 )
+EDGE_SECRET_FIELD = "discord_proxy_edge_secret"
 PUBLIC_FIELDS = {
     "discord_client_id": "DISCORD_CLIENT_ID",
     "discord_public_key": "DISCORD_PUBLIC_KEY",
     "discord_guild_id": "DISCORD_ALLOWED_GUILD_IDS",
 }
-FIELDS = (*SECRET_FIELDS, *PUBLIC_FIELDS)
+
+
+def secret_fields(proxy_auth_mode: str) -> tuple[str, ...]:
+    return (*SECRET_FIELDS, EDGE_SECRET_FIELD) if proxy_auth_mode == "cloudflare-worker" else SECRET_FIELDS
+
+
+def required_fields(proxy_auth_mode: str) -> tuple[str, ...]:
+    return (*secret_fields(proxy_auth_mode), *PUBLIC_FIELDS)
+
+
+def resolve_proxy_auth_mode(requested: str | None, stack: Path) -> str:
+    if requested:
+        return requested
+    match = re.search(r"^DISCORD_PROXY_AUTH_MODE=(.*)$", (stack / ".env").read_text(), re.M)
+    mode = match.group(1).strip() if match else "signature"
+    if mode not in ("signature", "cloudflare-worker"):
+        raise SetupError("Stack DISCORD_PROXY_AUTH_MODE must be signature or cloudflare-worker.")
+    return mode
 
 
 class SetupError(Exception):
@@ -54,7 +74,7 @@ def run(args: list[str], *, timeout: int = 90) -> subprocess.CompletedProcess[st
 def read_fields(args: argparse.Namespace) -> tuple[dict[str, str], list[str]]:
     values: dict[str, str] = {}
     unavailable: list[str] = []
-    for field in FIELDS:
+    for field in required_fields(args.proxy_auth_mode):
         result = run([sys.executable, str(args.resolver), "get", f"op://{args.vault}/{args.item_id}/{field}"])
         if result.returncode:
             # Resolver diagnostics may contain upstream payloads; never relay them.
@@ -77,6 +97,20 @@ def invalid_fields(values: dict[str, str]) -> list[str]:
         value = values.get(field, "")
         if value and (len(value) < 32 or len(set(value)) < 12 or re.search(r"development|change[-_ ]?me|replace[-_ ]?me|your[-_ ]|example|placeholder", value, re.I)):
             invalid.add(field)
+    value = values.get(EDGE_SECRET_FIELD, "")
+    if value:
+        valid = bool(re.fullmatch(r"[A-Za-z0-9_-]{43,512}", value)) and len(set(value)) >= 12
+        valid = valid and not re.search(r"development|change[-_]?me|replace[-_]?me|example|placeholder", value, re.I)
+        if re.fullmatch(r"[a-fA-F0-9]+", value):
+            valid = valid and len(value) >= 64 and len(value) % 2 == 0
+        else:
+            try:
+                decoded = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+                valid = valid and len(decoded) >= 32 and base64.urlsafe_b64encode(decoded).decode().rstrip("=") == value
+            except ValueError:
+                valid = False
+        if not valid:
+            invalid.add(EDGE_SECRET_FIELD)
     value = values.get("token_encryption_key", "")
     if value:
         try:
@@ -157,7 +191,8 @@ def apply_config(args: argparse.Namespace, values: dict[str, str]) -> None:
     env_path = stack / ".env"
     if not directory.is_dir() or directory.is_symlink() or env_path.is_symlink():
         raise SetupError("The existing provisioned secret directory and regular stack .env are required.")
-    if any((directory / field).is_symlink() for field in SECRET_FIELDS):
+    active_secret_fields = secret_fields(args.proxy_auth_mode)
+    if any((directory / field).is_symlink() for field in active_secret_fields):
         raise SetupError("Runtime secret paths must not be symlinks.")
     original = env_path.read_text()
     old = dict(re.findall(r"^([A-Z_]+)=(.*)$", original, re.M))
@@ -168,6 +203,7 @@ def apply_config(args: argparse.Namespace, values: dict[str, str]) -> None:
     except (KeyError, ValueError):
         raise SetupError("Stack PUID/PGID must identify the provisioned non-root service account.") from None
     updates = {env_name: values[field].strip() for field, env_name in PUBLIC_FIELDS.items()}
+    updates["DISCORD_PROXY_AUTH_MODE"] = args.proxy_auth_mode
     candidate = replace_env(original, updates)
     # This temporary file contains only the existing nonsecret stack config and IDs.
     with tempfile.NamedTemporaryFile(mode="w", prefix="jellyfin-watch-env-", suffix=".env") as temp:
@@ -176,7 +212,7 @@ def apply_config(args: argparse.Namespace, values: dict[str, str]) -> None:
         compose_check(stack, Path(temp.name))
     staged: dict[str, Path] = {}
     try:
-        for field in SECRET_FIELDS:
+        for field in active_secret_fields:
             target = directory / field
             if target.exists() and target.read_text().rstrip("\r\n") == values[field]:
                 continue
@@ -213,16 +249,20 @@ def main() -> int:
     parser.add_argument("--data-dir", type=Path, default=Path("/mnt/Pool/Services/Data/jellyfin-discord-activity"))
     parser.add_argument("--operator-uid", type=int, default=3000)
     parser.add_argument("--admin-gid", type=int, default=544)
+    parser.add_argument("--proxy-auth-mode", choices=("signature", "cloudflare-worker"),
+                        help="Explicit ingress mode; otherwise preserve the mode already in the stack .env.")
     args = parser.parse_args()
     if "/" in args.vault or not re.fullmatch(r"[a-z0-9]{26}", args.item_id) or min(args.operator_uid, args.admin_gid) < 1:
         raise SetupError("Invalid vault/item or operator/admin identifiers.")
+    args.proxy_auth_mode = resolve_proxy_auth_mode(args.proxy_auth_mode, args.stack_dir)
     values, unavailable = read_fields(args)
-    missing = [field for field in FIELDS if field not in unavailable and not values.get(field)]
+    missing = [field for field in required_fields(args.proxy_auth_mode) if field not in unavailable and not values.get(field)]
     invalid = invalid_fields(values)
     ready = not (missing or unavailable or invalid)
     if ready and args.apply:
         apply_config(args, values)
-    print(json.dumps({"ready": ready, "applied": bool(ready and args.apply), "missing_fields": missing, "unavailable_fields": unavailable, "invalid_fields": invalid}))
+    print(json.dumps({"ready": ready, "applied": bool(ready and args.apply), "proxy_auth_mode": args.proxy_auth_mode,
+                      "missing_fields": missing, "unavailable_fields": unavailable, "invalid_fields": invalid}))
     return 0 if ready else 1
 
 

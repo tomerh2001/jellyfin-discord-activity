@@ -12,3 +12,4 @@ logs/**/*
 !logs/README.md
 .DS_Store
 *.tsbuildinfo
+__pycache__/

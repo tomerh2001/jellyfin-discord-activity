@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isStrongDiscordEdgeSecret } from "./services/discordEdgeAuth.js";
 
 const booleanFromString = z
   .string()
@@ -19,9 +20,11 @@ export const envSchema = z.object({
   DISCORD_CLIENT_ID: z.string().default("dev-client-id"),
   DISCORD_BOT_TOKEN: z.string().default(""),
   DISCORD_PUBLIC_KEY: z.string().regex(/^$|^[a-fA-F0-9]{64}$/).default(""),
-  // Production always requires signed Discord proxy traffic. Enable this only
+  // Production always requires the selected Activity ingress proof. Enable this only
   // to exercise the same ingress boundary during local development/tests.
   DISCORD_REQUIRE_PROXY_AUTH: booleanFromString.default(false),
+  DISCORD_PROXY_AUTH_MODE: z.enum(["signature", "cloudflare-worker"]).default("signature"),
+  DISCORD_PROXY_EDGE_SECRET: z.string().default(""),
   DISCORD_ALLOWED_GUILD_IDS: z.string().default(""),
   DISCORD_ALLOWED_USER_IDS: z.string().default(""),
   DISCORD_CLIENT_SECRET: z.string().default("dev-client-secret"),
@@ -55,6 +58,9 @@ export type AppEnv = z.infer<typeof envSchema>;
 
 export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
   const env = envSchema.parse(input);
+  if (env.DISCORD_PROXY_AUTH_MODE === "cloudflare-worker" && !isStrongDiscordEdgeSecret(env.DISCORD_PROXY_EDGE_SECRET)) {
+    throw new Error("DISCORD_PROXY_EDGE_SECRET must encode at least 32 random bytes as hex or base64url for cloudflare-worker mode.");
+  }
   if (env.NODE_ENV === "production") {
     const problems: string[] = [];
     const realSecret = (value: string) => value.length >= 32

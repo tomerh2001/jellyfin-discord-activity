@@ -1,6 +1,6 @@
 # Security
 
-- Production accepts browser, API, media, and WebSocket requests only with a valid Discord Activity proxy signature. Direct requests to the origin are denied even with a spoofed Discord referrer or source-IP header.
+- Production requires Activity ingress proof on browser, API, media, and WebSocket requests: Discord proxy signatures by default, or an explicitly configured trusted Cloudflare Worker attestation. Direct requests to the origin are denied even with a spoofed Discord referrer or source-IP header.
 - Do not expose Discord client secrets or Jellyfin tokens in the browser bundle.
 - Use HTTPS/WSS in production.
 - Generate all session and token encryption secrets with at least 32 bytes of entropy.
@@ -44,16 +44,35 @@ Room snapshots contain selection and playback state, never app sessions. They re
 
 ## Discord Activity ingress
 
-With `NODE_ENV=production`, the signed proxy gate is mandatory and cannot be disabled by setting `DISCORD_REQUIRE_PROXY_AUTH=false`. The flag enables the same gate in development/test environments. The gate uses the existing application's `DISCORD_PUBLIC_KEY`; no shared secret is sent to the frontend.
+With `NODE_ENV=production`, the ingress gate is mandatory and cannot be disabled by setting `DISCORD_REQUIRE_PROXY_AUTH=false`. The flag enables the same gate in development/test environments. `DISCORD_PROXY_AUTH_MODE` selects exactly one proof mechanism; there is no automatic fallback. Unknown mode values fail startup. Neither mechanism replaces user, guild or Activity-instance authorization.
+
+### Discord signatures (default)
+
+`DISCORD_PROXY_AUTH_MODE=signature` uses the application's `DISCORD_PUBLIC_KEY` and does not need a shared origin secret.
 
 Discord's [proxy authentication protocol](https://docs.discord.com/developers/activities/development-guides/multiplayer-experience#validating-proxy-request-headers) sends `X-Discord-Proxy-Payload` (base64), `X-Signature-Ed25519`, and `X-Signature-Timestamp`. The verifier checks the Ed25519 signature over the decoded payload bytes, the timestamp's exact match to `created_at`, a bounded future clock skew, and `expires_at`. Invalid encodings and payloads fail closed. Discord's JavaScript sample encodes the signature as base64 while its Python sample uses hex; this implementation strictly accepts either representation of a 64-byte signature.
 
 The published protocol signs a reusable token, **not the request method, URL, body, or a unique nonce**. A captured valid token can therefore be reused until it expires. This gate is additional protection, not proof that an HTTP client is physically inside Discord. OAuth identity, allowed server/user checks, active-instance verification, session expiry and host authorization remain required for all library and playback access. Neither CORS, referrers, client-provided instance IDs nor IP headers count as identity proof.
 
-Only exact `POST /api/discord/interactions` bypasses the proxy-token verifier, because Discord callbacks instead require the existing exact-body interaction signature. A proxy token cannot authenticate an interaction, or vice versa. Exact `GET`/`HEAD /health` is available only to the container's actual loopback TCP peer without forwarded headers; it remains inaccessible through the public proxy. `/api/health` follows normal proxy authentication.
+Some Discord launch paths do not deliver the optional signature headers. In particular, the September 2026 web client requested a proxy ticket through its normal App Launcher flow but omitted it when directly launching a type-12 slash/context-menu interaction response. Verify actual iframe, asset, API and WebSocket requests rather than assuming all launch paths receive signatures. Missing signatures are denied in this mode.
+
+### Cloudflare Worker attestation
+
+`DISCORD_PROXY_AUTH_MODE=cloudflare-worker` supports deployments whose Discord launch flow lacks signed proxy headers. This mode requires all of the following edge controls before activation:
+
+1. Match only the Activity hostname and Cloudflare's authoritative `cf.worker.upstream_zone eq "discordsays.com"` field. The ordinary `CF-Worker` HTTP header is not proof and must never be used as the security condition.
+2. For that verified Worker traffic, a request-header Transform Rule must **overwrite** `x-jellyfin-discord-edge` with a secret shared only by this application's origin and the trusted Cloudflare configuration. A complementary rule must remove the header from all other traffic to this hostname, including client-supplied copies.
+3. An exact-host WAF rule must block nonmatching Worker traffic, with only exact `POST /api/discord/interactions` excepted for Discord's independently signed callbacks. Preserve existing security rules. Do not cache this hostname, including HTML and assets.
+4. Set `DISCORD_PROXY_EDGE_SECRET` or `DISCORD_PROXY_EDGE_SECRET_FILE` at the origin to the same secret. Generate at least 32 cryptographically random bytes, encoded as 64 hex characters or unpadded base64url. Startup rejects missing, short, malformed or obviously weak values. The verifier compares fixed-length SHA-256 digests with `timingSafeEqual`; duplicate/altered headers are rejected. The secret and header are redacted in application logs and must not be exposed to the browser, source repository, response headers or diagnostic output.
+
+See Cloudflare's [Worker zone field](https://developers.cloudflare.com/ruleset-engine/rules-language/fields/reference/cf.worker.upstream_zone/) and [CF-Worker header guidance](https://developers.cloudflare.com/fundamentals/reference/http-request-headers/#cf-worker). This attestation proves traversal of the configured trusted Discord Worker, not which Discord user or application instance sent the request. The backend still verifies its own application's OAuth identity, active-instance users and allowed guild before granting library, room or media access. A captured origin secret would weaken this ingress layer until rotated; keep it restricted and rotate the edge and origin values together.
+
+Before activating this mode, verify that genuine Discord traffic receives a header matching the secret without printing either value. Then confirm direct and forged-`CF-Worker` requests are blocked, the origin rejects absent/wrong secrets, signed interactions still work, and real WebSocket upgrades and media requests retain both ingress and application authorization.
+
+### Shared invariants
+
+Only exact `POST /api/discord/interactions` bypasses the selected ingress verifier, because Discord callbacks instead require the existing exact-body interaction signature. An edge secret or proxy token cannot authenticate an interaction, or vice versa. Exact `GET`/`HEAD /health` is available only to the container's actual loopback TCP peer without forwarded headers; it remains inaccessible through the public proxy. `/api/health` follows normal ingress authentication.
 
 The gate runs before CORS, request-body parsing, static handling and the WebSocket handshake. Register the WebSocket plugin first so its request bookkeeping and rejected-upgrade cleanup hooks are installed; authentication still runs before the upgrade handler. A real TCP upgrade regression test covers both rejection and acceptance, including closing refused sockets cleanly.
 
-Every gated HTTP response sends `Cache-Control: private, no-store` and CDN-specific no-store headers, including frontend assets, so a shared cache cannot serve previously authorized responses without checking credentials. Keep a hostname-wide cache bypass at Cloudflare and preserve the signature headers through the tunnel/reverse proxy. Never log proxy tokens or signatures. This application does not rely on a shared Discord egress-IP allowlist.
-
-Before opening public ingress, launch the Activity through the configured Discord URL mapping and verify that real requests carry valid proxy headers; the documentation does not describe a portal toggle or promise per-request header availability for every launch context. If headers are absent, the service will deny access. Do not disable the gate to make an unverified launch work.
+Every gated HTTP response sends `Cache-Control: private, no-store` and CDN-specific no-store headers, including frontend assets, so a shared cache cannot serve previously authorized responses without checking credentials. Keep a hostname-wide cache bypass at Cloudflare and preserve the configured proof headers through the tunnel/reverse proxy. Never log proxy tokens, signatures or origin secrets. This application does not rely on a shared Discord egress-IP allowlist.
