@@ -23,16 +23,36 @@ The build applies a small integration patch before compiling the upstream source
   parent for a fresh gateway launch, since disconnected capabilities expire.
   Native Jellyfin owns library browsing,
   episode queues, playback, audio, subtitles, quality and synchronization.
+- If an accessible episode is absent from Jellyfin's expanded series response,
+  playback keeps the originally selected episode rather than sending an empty
+  queue. Other queue validation failures produce a native toast with fixed text;
+  only the three known queue error codes on this frame's gateway are accepted.
 - Shared playback uses native skip prompts, even if the account previously
   selected automatic skipping. That prevents a personal preference from seeking
   everyone else's playback. Remote player plugins and the group picker are not
   part of the Activity UI.
-- The optional enable-playback button lives in the child frame so its click can
-  satisfy mobile media gesture requirements. Its native `resumeGroupPlayback`
-  call loads only this viewer's queue and changes their IgnoreWait setting; it
-  does not send a shared Unpause command. The button disappears after a successful
-  permission check or the media element's actual `playing` event. Native
+- A blocked media element exposes **Tap to play on this device** in the child
+  frame. The click calls that exact element's `play()` before any asynchronous
+  work; a temporary silent audio probe cannot grant a different video element
+  WebKit playback permission. This never sends a shared Unpause command, and it
+  restores a paused/stopped native group state after unlocking. The button stays
+  available on failure and disappears when playback succeeds. Native
   `playbackstart` fires during preparation and cannot prove autoplay succeeded.
+  The native video player's separate `unpause()` path also reports a rejected
+  play attempt to the same recovery control.
+- Native view navigation bubbles a custom `pagehide` from a DIV. It must not
+  dispose document-wide adapter listeners. `onDocumentExit` accepts only a real
+  window `PageTransitionEvent` with `persisted: false`; it does not use `once`,
+  since a filtered custom event would still consume a once-only listener.
+  Playback prompts, layout, queue feedback and video observers therefore survive
+  ordinary Home-to-details navigation and back/forward-cache preservation.
+- Discord's focused, picture-in-picture and grid layouts resize the existing
+  player. Video previews hide library/navigation chrome. The layout event does
+  not require another OAuth exchange or a replacement native frame. Standard
+  browser fullscreen is requested directly from a user click; Discord's ancestor
+  frame policy can refuse it, and the Activity cannot force the outer Discord
+  application window into fullscreen. See [Discord layouts](https://docs.discord.com/developers/activities/development-guides/layout)
+  and [fullscreen requirements](https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullscreen).
 - [HLS.js](https://github.com/video-dev/hls.js) 1.6.13 uses its lockfile-pinned
   standalone worker asset. Rebundling the default
   stringified worker factory can leave a webpack module reference outside its

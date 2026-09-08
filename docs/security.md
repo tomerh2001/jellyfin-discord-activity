@@ -4,6 +4,8 @@
 
 Discord OAuth identifies the user. The bot-authenticated Activity Instance API verifies this application's instance, participants, guild and channel. Production also requires strong secrets, a server/user allowlist and the ingress proof described below. User-supplied context, referrers and IP headers are not membership proof.
 
+An open Activity may recover a lost app session through `/api/discord/resume` using the Discord OAuth token already held in memory. The backend checks `/oauth2/@me` for this application, `identify` scope and an unexpired grant, independently confirms `/users/@me`, and verifies current Activity membership and the allowlist before issuing a new app token. No cached identity, cookie or browser-storage fallback grants access when those checks fail. The route remains behind ingress proof and returns private/no-store responses. Concurrent failures share one recovery attempt; explicit Leave suppresses recovery and revokes any late completion.
+
 Personal Jellyfin tokens are encrypted in SQLite and scoped to their Discord owner and normalized server identity. Passwords are not stored. Quick Connect approval secrets stay on the backend and are session-bound. Community access requires an explicit selection and an allowed guild; its dedicated non-admin account shares watch history. Disconnecting removes the saved connection and cancels its active viewers before attempting upstream token revocation.
 
 Generic targets require public HTTPS, checked DNS answers and pinned-IP HTTP/WebSocket connections. The only private/HTTP exception is the exact configured default URL. Redirects and paths escaping the configured base are rejected. Only the bundled, pinned Jellyfin Web client is served; remote servers cannot supply executable client code through the gateway.
@@ -20,7 +22,7 @@ The bundled client keeps gateway credentials in memory and does not register a s
 
 **Leave watch party** waits for successful session revocation, removes the player, then closes the Discord Embedded SDK connection normally. The voice call remains connected. A failed revocation can be retried; a fresh `/watch` launch creates the next authenticated RPC session.
 
-Discord command callbacks require exact-body Ed25519 verification, a bounded timestamp, the expected application and an allowed caller. Duplicate interaction IDs reuse the initial response. Playback commands additionally verify current voice channel, authoritative Activity membership and the caller's live native player. Selection menus include the party binding ID so stale results cannot change a new group. Responses are ephemeral and disable mentions.
+Discord command callbacks require exact-body Ed25519 verification, a bounded timestamp, the expected application and an allowed caller. Duplicate interaction IDs reuse the initial response. The primary entry point uses the app handler and returns only a launch response; it does not post an automatic invitation. Playback commands additionally verify current voice channel, authoritative Activity membership and the caller's live native player. Selection menus include the party binding ID so stale results cannot change a new group. Playback responses are ephemeral and disable mentions.
 
 The connection, native-gateway and Discord security test suites cover URL/DNS/redirect isolation, stored-token ownership, Quick Connect, native authorization, real WebSocket upgrades, queue permissions, logout/expiry and stream cancellation.
 

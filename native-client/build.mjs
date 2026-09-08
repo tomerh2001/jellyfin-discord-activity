@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile, cp, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { precompress } from './precompress.mjs';
+import { patchVideoUnpause } from './videoPlaybackPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -48,6 +50,21 @@ await replace('src/index.jsx', "import { pageClassOn, serverAddress } from './ut
 await replace('src/index.jsx', '    await renderApp();', '    await renderApp();\n    await finishDiscordBootstrap();');
 await replace('src/index.jsx', '        registerServiceWorker();', '        // Activity sessions and gateway capabilities must never enter a service-worker cache.');
 await replace('src/index.jsx', '\ninit();', '\ninit().catch(failDiscordBootstrap);');
+await replace('src/components/htmlMediaHelper.js',
+    '                    // swallow this error because the user can still click the play button on the video element',
+    `                    // Embedded mobile players need a gesture on this exact video,
+                    // not the SyncPlay UI's temporary silent audio element.
+                    elem.dispatchEvent(new Event('jellyfin-watch-playback-blocked', { bubbles: true }));
+                    // Keep upstream recovery behavior; our adapter offers the gesture.`);
+const videoPlugin = path.join(source, 'src/plugins/htmlVideoPlayer/plugin.js');
+await writeFile(videoPlugin, patchVideoUnpause(await readFile(videoPlugin, 'utf8')));
+await replace('src/plugins/syncPlay/core/Helper.js',
+    `                    episodesResult.TotalRecordCount = episodesResult.Items.length;
+                    resolve(episodesResult);`,
+    `                    episodesResult.TotalRecordCount = episodesResult.Items.length;
+                    // A playable selected episode may be absent from the expanded
+                    // series list. Keep that selection rather than sending an empty queue.
+                    resolve(episodesResult.Items.length ? episodesResult : null);`);
 await replace('src/RootAppRouter.tsx', "const layoutMode = localStorage.getItem('layout');\nconst isExperimentalLayout = layoutMode === 'experimental';", '// The supported Activity UI is the native stable Jellyfin client.\nconst isExperimentalLayout = false;');
 await replace('src/apps/stable/features/playback/utils/mediaSegmentSettings.ts', '    return action ? action as MediaSegmentAction : defaultAction;', `    // An individual's automatic skip preference must not seek the whole party.
     if (action === MediaSegmentAction.Skip) return MediaSegmentAction.AskToSkip;
@@ -84,5 +101,6 @@ if (!process.argv.includes('--prepare-only')) {
     if (!licenseFile) throw new Error('Upstream license is missing');
     await cp(path.join(source, licenseFile), path.join(root, 'dist/JELLYFIN-LICENSE.txt'));
     await writeFile(path.join(root, 'dist/JELLYFIN-SOURCE.json'), JSON.stringify(upstream, null, 2) + '\n');
+    await precompress(path.join(root, 'dist'));
     console.info(`Built Jellyfin Web ${upstream.version} at ${upstream.commit}`);
 }

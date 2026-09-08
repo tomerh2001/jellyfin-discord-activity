@@ -1,5 +1,9 @@
 export const CHANNEL = 'jellyfin-watch-native';
 
+export function validPresentation(value) {
+    return value && typeof value === 'object' && ['focused', 'pip', 'grid'].includes(value.layout) && typeof value.preview === 'boolean';
+}
+
 export function validLaunch(value, origin) {
     if (!value || typeof value !== 'object') return false;
     const fields = ['accessToken', 'userId', 'serverId', 'deviceId', 'groupId'];
@@ -27,7 +31,7 @@ export function waitForParent(host, timeoutMs = 60000) {
                 return;
             }
             cleanup();
-            resolve({ ...data.launch, nonce });
+            resolve({ ...data.launch, nonce, presentation: validPresentation(data.presentation) ? data.presentation : { layout: 'focused', preview: false } });
         };
         const timeout = host.setTimeout(() => {
             cleanup();
@@ -40,4 +44,18 @@ export function waitForParent(host, timeoutMs = 60000) {
 
 export function sendStatus(host, nonce, status, extra = {}) {
     host.parent.postMessage({ channel: CHANNEL, type: 'status', nonce, status, ...extra }, host.location.origin);
+}
+
+export function observePresentation(host, nonce, update) {
+    const receive = event => {
+        const data = event.data;
+        if (event.source !== host.parent || event.origin !== host.location.origin || data?.channel !== CHANNEL || data.type !== 'presentation' || data.nonce !== nonce) return;
+        if (validPresentation(data.presentation)) update(data.presentation);
+    };
+    host.addEventListener('message', receive);
+    return () => host.removeEventListener('message', receive);
+}
+
+export function sendVideoState(host, nonce, active) {
+    host.parent.postMessage({ channel: CHANNEL, type: 'video', nonce, active }, host.location.origin);
 }

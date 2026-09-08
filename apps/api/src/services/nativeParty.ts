@@ -48,7 +48,9 @@ export type NativePartyDependencies = {
   current: typeof assertConnectionCurrent;
 };
 const CLIENT = "Jellyfin Discord Activity";
-const EMPTY_GRACE_MS = 30_000;
+// Keep the native queue while a renderer/popout reconnects. Socket loss still
+// leaves SyncPlay immediately, and membership/session expiry still fail closed.
+const EMPTY_GRACE_MS = 120_000;
 const LAUNCH_GRACE_MS = 120_000;
 const services = new WeakMap<object, NativePartyService>();
 
@@ -306,7 +308,8 @@ export class NativePartyService {
   }
 
   async requirePartyItems(viewer: NativeViewer, itemIds: string[]): Promise<void> {
-    if (!itemIds.length || itemIds.length > 500) throw new NativeError("native_invalid_queue", 400);
+    if (!itemIds.length) throw new NativeError("native_queue_empty", 400);
+    if (itemIds.length > 500) throw new NativeError("native_queue_too_large", 400);
     const party = this.parties.get(viewer.partyId);
     if (!party) throw new NativeError("native_session_expired", 401);
     const members = [...party.viewers].map((cap) => this.viewers.get(cap)).filter((v): v is NativeViewer => !!v && this.active(v));

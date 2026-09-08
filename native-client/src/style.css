@@ -15,3 +15,29 @@
 /* Parties belong to the Discord instance. Account selection belongs to the shell. */
 [data-discord-activity] .headerSyncButton,
 [data-discord-activity] .headerCastButton { display: none !important; }
+
+/* A Discord tile is a video preview, not a shrunken browsing/OSD viewport.
+   Keep the real media/subtitle surfaces so playback and SyncPlay continue. */
+[data-discord-video="true"][data-discord-preview="true"] { background: #000; }
+[data-discord-video="true"][data-discord-preview="true"] .videoPlayerContainer {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0 !important;
+    background: #000 !important;
+}
+[data-discord-video="true"][data-discord-preview="true"] .htmlvideoplayer {
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0 !important;
+    object-fit: contain !important;
+}
+[data-discord-video="true"][data-discord-preview="true"] .videoOsdBottom,
+[data-discord-video="true"][data-discord-preview="true"] .osdHeader,
+[data-discord-video="true"][data-discord-preview="true"] .syncPlayContainer,
+[data-discord-video="true"][data-discord-preview="true"] .upNextContainer,
+[data-discord-video="true"][data-discord-preview="true"] .dialogContainer,
+[data-discord-video="true"][data-discord-preview="true"] .toast,
+[data-discord-video="true"][data-discord-preview="true"] .discordPlaybackPermission { visibility: hidden !important; pointer-events: none !important; }
+[data-discord-video="true"][data-discord-preview="true"] .videoSubtitles { font-size: clamp(9px, 4.5vh, 22px) !important; }

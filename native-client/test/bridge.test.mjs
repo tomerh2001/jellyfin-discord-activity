@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { CHANNEL, validLaunch, waitForParent } from '../src/bridge.js';
+import { CHANNEL, validLaunch, waitForParent, observePresentation } from '../src/bridge.js';
 
 const launch = { baseUrl: '/jf/opaque-capability', accessToken: 'opaque-capability', userId: 'user', serverId: 'server', deviceId: 'device', groupId: 'group' };
 function fakeHost() {
@@ -45,4 +45,18 @@ test('a missing parent response times out and removes the listener', async () =>
     const host = fakeHost();
     await assert.rejects(waitForParent(host, 5), /timed out/);
     assert.equal(host.events.size, 0);
+});
+
+test('presentation updates require this parent, origin, nonce and a valid layout', () => {
+    const host = fakeHost(); const received = [];
+    const stop = observePresentation(host, 'unique-child-nonce', value => received.push(value));
+    const data = { channel: CHANNEL, type: 'presentation', nonce: 'unique-child-nonce', presentation: { layout: 'pip', preview: true } };
+    const event = { source: host.parent, origin: host.location.origin, data };
+    host.dispatch({ ...event, source: {} }); host.dispatch({ ...event, origin: 'https://untrusted.test' });
+    host.dispatch({ ...event, data: { ...data, nonce: 'old-frame-nonce' } });
+    host.dispatch({ ...event, data: { ...data, presentation: { layout: 'fullscreen', preview: true } } });
+    host.dispatch({ ...event, data: { ...data, presentation: { layout: 'pip', preview: 'true' } } });
+    assert.deepEqual(received, []);
+    host.dispatch(event); assert.deepEqual(received, [data.presentation]);
+    stop(); assert.equal(host.events.size, 0);
 });

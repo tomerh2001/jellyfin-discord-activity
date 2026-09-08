@@ -35,9 +35,17 @@ export function nativeRouteError(error: unknown, reply: import("fastify").Fastif
   if (error instanceof AuthError) return reply.code(error.statusCode).send(sendAuthError(error));
   if (error instanceof ConnectionError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.publicMessage } });
   if (error instanceof NativeError) {
+    // The native API client's requestfail event exposes this header, not the
+    // response body. Only fixed local queue codes are presented as native toasts.
+    if (["native_invalid_queue", "native_queue_empty", "native_queue_too_large"].includes(error.code)) {
+      reply.header("X-Application-Error-Code", error.code);
+    }
     const messages: Record<string, string> = {
       syncplay_create_not_allowed: "This Jellyfin account cannot create watch groups. Ask its server administrator to allow creating and joining SyncPlay groups.",
-      syncplay_join_not_allowed: "This Jellyfin account cannot join watch groups. Ask its server administrator to enable SyncPlay access."
+      syncplay_join_not_allowed: "This Jellyfin account cannot join watch groups. Ask its server administrator to enable SyncPlay access.",
+      native_invalid_queue: "Jellyfin sent an invalid playback queue. Open a movie or an individual episode and try again.",
+      native_queue_empty: "Jellyfin returned no playable items for this selection. Open an individual movie or episode and try again.",
+      native_queue_too_large: "This selection has more than 500 items. Choose a season or a smaller selection."
     };
     return reply.code(error.statusCode).send({ error: { code: error.code, message: messages[error.code] ?? "The native Jellyfin request could not be completed." } });
   }

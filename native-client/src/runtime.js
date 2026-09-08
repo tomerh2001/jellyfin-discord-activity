@@ -3,10 +3,14 @@ import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { appHost } from 'components/apphost';
 import { playbackManager } from 'components/playback/playbackmanager';
 import SyncPlay from 'plugins/syncPlay/core';
-import playbackPermissionManager from 'plugins/syncPlay/ui/playbackPermissionManager';
 import Events from 'utils/events';
-import { waitForParent, sendStatus } from './bridge';
+import toast from 'components/toast/toast';
+import { waitForParent, sendStatus, observePresentation, sendVideoState } from './bridge';
 import { observeMediaPlaying } from './mediaEvents';
+import { installPlaybackPermission } from './playbackPermission';
+import { observeQueueFailures } from './queueErrors';
+import { applyPresentation, observeVideoPresentation } from './presentation';
+import { onDocumentExit } from './lifecycle';
 import './style.css';
 
 let launch;
@@ -17,6 +21,9 @@ let reconnectTimer;
 export async function bootstrapDiscord() {
     launch = await waitForParent(window);
     document.documentElement.dataset.discordActivity = 'true';
+    applyPresentation(document, launch.presentation);
+    const stopPresentation = observePresentation(window, launch.nonce, value => applyPresentation(document, value));
+    onDocumentExit(window, stopPresentation);
     // The native client may remember playback preferences, but gateway credentials
     // must disappear with this frame. The broker stores real server credentials.
     let credentials = { Servers: [] };
@@ -61,6 +68,9 @@ async function joinParty() {
 }
 
 export async function finishDiscordBootstrap() {
+    const stopQueueFailures = observeQueueFailures(Events, apiClient, launch.baseUrl, window.location.origin,
+        text => toast({ text }));
+    onDocumentExit(window, stopQueueFailures);
     Events.on(SyncPlay.Manager, 'enabled', (_event, enabled) => {
         sendStatus(window, launch.nonce, enabled ? 'connected' : 'disconnected', { groupId: launch.groupId });
     });
@@ -73,35 +83,24 @@ export async function finishDiscordBootstrap() {
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => sendStatus(window, launch.nonce, 'reauthorize'), 40000);
     });
-    window.addEventListener('pagehide', () => clearTimeout(reconnectTimer), { once: true });
+    onDocumentExit(window, () => clearTimeout(reconnectTimer));
     Events.on(ServerConnections, 'localusersignedout', () => sendStatus(window, launch.nonce, 'signed-out'));
     const stopObserving = observeMediaPlaying(document, value => value instanceof HTMLMediaElement, () => {
         document.querySelector('.discordPlaybackPermission')?.remove();
         sendStatus(window, launch.nonce, 'playing');
     });
-    window.addEventListener('pagehide', stopObserving, { once: true });
-    Events.on(playbackManager, 'playbackstop', () => sendStatus(window, launch.nonce, 'browsing'));
+    onDocumentExit(window, stopObserving);
+    const videoPresentation = observeVideoPresentation(document, value => value instanceof HTMLVideoElement,
+        active => sendVideoState(window, launch.nonce, active));
+    onDocumentExit(window, videoPresentation.dispose);
+    Events.on(playbackManager, 'playbackstop', () => {
+        videoPresentation.stop();
+        sendStatus(window, launch.nonce, 'browsing');
+    });
+    const stopPlaybackPermission = installPlaybackPermission(window, () => SyncPlay.Manager.getLastPlaybackCommand());
+    onDocumentExit(window, stopPlaybackPermission);
     apiClient.ensureWebSocket();
     if (apiClient.isWebSocketOpen()) await joinParty();
-    addPlaybackPermissionButton();
-}
-
-function addPlaybackPermissionButton() {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'discordPlaybackPermission';
-    button.textContent = 'Tap to enable playback';
-    button.addEventListener('click', () => {
-        // This call must originate in the child's own click handler on mobile.
-        playbackPermissionManager.check().then(() => {
-            // Native Manager.resumeGroupPlayback only loads this viewer’s queue and
-            // sets IgnoreWait=false. It does not send /SyncPlay/Unpause; native
-            // playback commands retain the party’s existing paused/playing state.
-            if (SyncPlay.Manager.isSyncPlayEnabled()) SyncPlay.Manager.resumeGroupPlayback(apiClient);
-            button.remove();
-        }).catch(() => { button.textContent = 'Tap again to enable playback'; });
-    });
-    document.body.appendChild(button);
 }
 
 export function failDiscordBootstrap() {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
-import { exchangeDiscordCode } from "../services/discord.js";
+import { exchangeDiscordCode, getDiscordCurrentUser } from "../services/discord.js";
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -154,5 +154,39 @@ describe("Discord auth routes", () => {
     });
 
     await app.close();
+  });
+});
+
+
+describe("bounded Discord transport recovery", () => {
+  it("retries a safe GET after a network interruption", async () => {
+    const upstream = vi.fn().mockRejectedValueOnce(new DOMException("Aborted", "TimeoutError"))
+      .mockResolvedValueOnce(Response.json({ id: "user", username: "Viewer" }));
+    vi.stubGlobal("fetch", upstream);
+    await expect(getDiscordCurrentUser("existing-token")).resolves.toMatchObject({ id: "user" });
+    expect(upstream).toHaveBeenCalledTimes(2);
+  });
+  it("does not retry a possibly consumed OAuth authorization code", async () => {
+    const upstream = vi.fn().mockRejectedValue(new DOMException("Aborted", "TimeoutError"));
+    vi.stubGlobal("fetch", upstream);
+    await expect(exchangeDiscordCode(loadEnv({ NODE_ENV: "test" }), "single-use-code")).rejects.toMatchObject({ statusCode: 503 });
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+  it("does not retry a rate limit before a longer Retry-After expires", async () => {
+    const upstream = vi.fn().mockResolvedValue(Response.json({}, { status: 429, headers: { "Retry-After": "30" } }));
+    vi.stubGlobal("fetch", upstream);
+    await expect(getDiscordCurrentUser("existing-token")).rejects.toMatchObject({ statusCode: 429 });
+    expect(upstream).toHaveBeenCalledTimes(1);
+  });
+  it("waits for a bounded Retry-After before a single safe retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const upstream = vi.fn().mockResolvedValueOnce(Response.json({}, { status: 429, headers: { "Retry-After": "0.5" } }))
+        .mockResolvedValueOnce(Response.json({ id: "user", username: "Viewer" }));
+      vi.stubGlobal("fetch", upstream);
+      const pending = getDiscordCurrentUser("existing-token");
+      await vi.advanceTimersByTimeAsync(499); expect(upstream).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1); await pending; expect(upstream).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 });
