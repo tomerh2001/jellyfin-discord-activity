@@ -6,6 +6,7 @@
     min-width: 0;
 }
 .discordNativeDialog .formDialogContent { min-height: 0; }
+.discordNativeLoading .discordNativeDialogContent { padding-top: max(1em, env(safe-area-inset-top)); }
 .discordNativeDialogContent {
     padding: .5em max(1em, env(safe-area-inset-right)) max(1em, env(safe-area-inset-bottom)) max(1em, env(safe-area-inset-left));
     overflow-wrap: anywhere;

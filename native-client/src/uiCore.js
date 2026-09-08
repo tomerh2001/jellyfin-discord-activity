@@ -29,15 +29,18 @@ export function createNativeUi({ document, dialogHelper, actionSheet, toast,
         dlg.classList.add('formDialog', 'discordNativeDialog', 'dialog-fullscreen-lowres');
         dlg.setAttribute('role', 'dialog');
         dlg.setAttribute('aria-modal', 'true');
-        const heading = element('h1', 'formDialogHeaderTitle', title);
-        heading.id = `discordNativeDialogTitle${++sequence}`;
-        dlg.setAttribute('aria-labelledby', heading.id);
-        const header = element('div', 'formDialogHeader');
-        header.appendChild(heading);
+        if (title) {
+            const heading = element('h1', 'formDialogHeaderTitle', title);
+            heading.id = `discordNativeDialogTitle${++sequence}`;
+            dlg.setAttribute('aria-labelledby', heading.id);
+            const header = element('div', 'formDialogHeader');
+            header.appendChild(heading);
+            dlg.appendChild(header);
+        }
         const scroller = element('div', 'formDialogContent smoothScrollY');
         const content = element('div', 'dialogContentInner discordNativeDialogContent');
         scroller.appendChild(content);
-        dlg.append(header, scroller);
+        dlg.appendChild(scroller);
         // Startup has no native page to return to. While a request is pending,
         // Back must not leave an orphaned login or discard a later result.
         dlg.addEventListener('command', event => {
@@ -272,7 +275,9 @@ export function createNativeUi({ document, dialogHelper, actionSheet, toast,
     }
 
     function showLoading(text = 'Connecting to Discord…') {
-        const { dlg, content } = createDialog('Jellyfin Watch', () => false);
+        const { dlg, content } = createDialog(null, () => false);
+        dlg.classList.add('discordNativeLoading');
+        dlg.setAttribute('aria-label', text);
         dlg.setAttribute('aria-busy', 'true');
         const status = element('p', '', text); status.setAttribute('role', 'status');
         content.appendChild(status);
