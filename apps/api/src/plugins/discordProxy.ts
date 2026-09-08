@@ -3,12 +3,15 @@ import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import type { AppEnv } from "../env.js";
 import { createDiscordProxyVerifier } from "../services/discordProxySignature.js";
+import { createDiscordEdgeVerifier } from "../services/discordEdgeAuth.js";
 
 /** Global onRequest hook runs before JSON parsing, CORS, static files and WS upgrade. */
 export function discordProxyPlugin(env: AppEnv): FastifyPluginAsync {
   return fp(async (app) => {
     if (env.NODE_ENV !== "production" && !env.DISCORD_REQUIRE_PROXY_AUTH) return;
-    const verifyProxy = createDiscordProxyVerifier(env.DISCORD_PUBLIC_KEY);
+    const verifyProxy = env.DISCORD_PROXY_AUTH_MODE === "cloudflare-worker"
+      ? createDiscordEdgeVerifier(env.DISCORD_PROXY_EDGE_SECRET)
+      : createDiscordProxyVerifier(env.DISCORD_PUBLIC_KEY);
     app.addHook("onSend", async (_request, reply, payload) => {
       // A shared cached asset would skip authentication on the next request.
       reply.header("Cache-Control", "private, no-store");

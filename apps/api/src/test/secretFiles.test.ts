@@ -15,6 +15,9 @@ describe("secret file loading", () => {
       expect(input).not.toHaveProperty("JELLYFIN_SHARED_PASSWORD");
       expect(() => loadSecretFiles({ ...input, JELLYFIN_SHARED_PASSWORD: "conflict" })).toThrow("not both");
       expect(() => loadSecretFiles({ DISCORD_BOT_TOKEN_FILE: "/sensitive/not-present" })).toThrow("Unable to load DISCORD_BOT_TOKEN_FILE.");
+      expect(loadSecretFiles({ DISCORD_PROXY_EDGE_SECRET_FILE: file }).DISCORD_PROXY_EDGE_SECRET).toBe("secret");
+      expect(() => loadSecretFiles({ DISCORD_PROXY_EDGE_SECRET_FILE: file, DISCORD_PROXY_EDGE_SECRET: "conflict" })).toThrow("not both");
+      expect(() => loadSecretFiles({ DISCORD_PROXY_EDGE_SECRET_FILE: "/sensitive/not-present" })).toThrow("Unable to load DISCORD_PROXY_EDGE_SECRET_FILE.");
     } finally { rmSync(directory, { recursive: true }); }
   });
 });
