@@ -344,14 +344,21 @@ function ActivityShell({ config, discord }: ActivityShellProps) {
 
   return (
     <main className="app-shell">
-      <section className="action-bar">
+      <header className="action-bar">
+        <div className="app-brand">
+          <img src="/branding/jellyfin-watch-icon.png" alt="" width="48" height="48" />
+          <div>
+            <h1>Jellyfin Watch</h1>
+            <p>Movies and episodes, together.</p>
+          </div>
+        </div>
         <AuthControls
           authState={authState}
           leaving={leaving}
           onAuthenticate={() => void authenticate()}
           onLogout={() => void signOut()}
         />
-      </section>
+      </header>
 
       {leaveError ? <ErrorPanel title="Could not leave watch party" message={leaveError} /> : null}
 
