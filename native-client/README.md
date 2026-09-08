@@ -65,9 +65,16 @@ The build applies a small integration patch before compiling the upstream source
 - Discord's focused, picture-in-picture and grid layouts resize the existing
   player. Video previews hide library/navigation chrome. The layout event does
   not require another OAuth exchange or a new document. Jellyfin's standard
-  fullscreen control acts on a user click; Discord's embedding
-  policy can refuse it, and the Activity cannot force the outer Discord
-  application window into fullscreen. See [Discord layouts](https://docs.discord.com/developers/activities/development-guides/layout)
+  fullscreen button, F shortcut and double-click synchronously request document
+  fullscreen, keeping Jellyfin's OSD and subtitle overlays visible. Where only
+  Safari video fullscreen is available, the native player uses its exact video
+  element and tracks that element's fullscreen entry/exit events. Those listeners
+  are removed with the player. Unsupported requests and synchronous/asynchronous
+  refusals show fixed native toast feedback without changing playback or SyncPlay.
+  Discord's embedding policy can refuse fullscreen, and the Activity cannot force
+  the outer Discord application window into fullscreen. SDK 2.5.0 has no command
+  to override that policy. See [Discord SDK commands](https://github.com/discord/embedded-app-sdk/blob/v2.5.0/src/commands/index.ts),
+  [Discord layouts](https://docs.discord.com/developers/activities/development-guides/layout)
   and [fullscreen requirements](https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullscreen).
 - Discord can replace the entire document when popping an Activity out or back
   in, and can assign a new instance ID if the Activity was otherwise empty
