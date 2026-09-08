@@ -48,6 +48,20 @@ test('repeat account selection installs fresh native clients while reusing one D
     assert.ok(!f.calls.includes('join'));
 });
 
+test('restoring the saved account skips redundant preference writes without skipping party validation', async () => {
+    const f = fixture();
+    let checks = 0;
+    f.broker.getParty = async () => { checks++; return party; };
+    await f.controller.start();
+    await f.controller.load();
+    await f.controller.select(connection);
+    assert.ok(!f.calls.includes('preference'));
+    assert.equal(checks, 2);
+    assert.equal(f.calls.filter(value => Array.isArray(value) && value[0] === 'install').length, 1);
+    await f.controller.select({ ...connection, id: 'new-account' });
+    assert.equal(f.calls.filter(value => value === 'preference').length, 1);
+});
+
 test('expired broker proof resumes with retained Discord credentials without SDK reauthorization', async () => {
     const f = fixture(); await f.controller.start(); await f.controller.select(connection);
     f.broker.getConnections = async token => {

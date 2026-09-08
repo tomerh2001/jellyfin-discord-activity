@@ -6,6 +6,7 @@ import { getNativePartyService, NativeError, publicNativeParty } from "../servic
 
 const binding = z.object({ connectionId: z.string().min(1).max(128) }).strict();
 const launch = binding.extend({ deviceId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/) });
+const navigation = binding.extend({ route: z.string().max(1024), sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) });
 
 export const nativePartyRoutes: FastifyPluginAsync = async (app) => {
   const service = getNativePartyService(app);
@@ -27,6 +28,23 @@ export const nativePartyRoutes: FastifyPluginAsync = async (app) => {
       const parsed = launch.safeParse(request.body);
       if (!parsed.success) throw new NativeError("invalid_request", 400);
       return await service.launch(session, parsed.data.connectionId, parsed.data.deviceId);
+    } catch (error) { return nativeRouteError(error, reply); }
+  });
+  app.get("/api/native/restore", async (request, reply) => {
+    try {
+      const session = await requireAppSession(request);
+      const parsed = binding.safeParse(request.query);
+      if (!parsed.success) throw new NativeError("invalid_request", 400);
+      return { route: await service.navigationCheckpoint(session, parsed.data.connectionId) };
+    } catch (error) { return nativeRouteError(error, reply); }
+  });
+  app.put("/api/native/restore", async (request, reply) => {
+    try {
+      const session = await requireAppSession(request);
+      const parsed = navigation.safeParse(request.body);
+      if (!parsed.success) throw new NativeError("invalid_request", 400);
+      await service.navigationCheckpoint(session, parsed.data.connectionId, parsed.data);
+      return { ok: true };
     } catch (error) { return nativeRouteError(error, reply); }
   });
 };

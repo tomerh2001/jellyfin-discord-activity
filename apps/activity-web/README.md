@@ -16,7 +16,9 @@ The facade keeps the existing authenticated broker API:
 | `getConnections` | `(appToken, signal?)`; returns saved connections, preference and community availability. |
 | `getParty` | `(appToken, signal?)`; returns the current party or `null`. |
 | `joinParty` | `(appToken, connectionId)`; explicitly binds the party. |
-| `launchNative` | `(appToken, connectionId, deviceId)`; returns the opaque gateway launch. |
+| `launchNative` | `(appToken, connectionId, deviceId)`; returns the opaque gateway launch including `restoreRoute: string \| null`. |
+| `normalizeNativeRoute` | `(value, serverId)`; returns an allowed native browsing hash or `null`. |
+| `saveNativeRestore` | `(appToken, connectionId, route, sequence, keepalive?)`; saves transient navigation for the current viewer. |
 | `matchesPartyServer` | `(connection, party)`; checks both server ID and URL. |
 | `savePreference` | `(appToken, connectionId)`. |
 | `connectAccount` | `(appToken, {serverUrl, username, password})`; returns the saved connection. |
@@ -37,6 +39,11 @@ Tokens stay in document memory. Credentials are submitted to authenticated broke
 endpoints, and native launches must use an opaque same-origin `/jf/…` path. The
 native adapter must unsubscribe and dispose its session when leaving, suppress
 recovery once logout starts, and limit automatic recovery to prevent retry loops.
+Navigation restoration lives in bounded server memory and requires a newly
+verified session after a window replacement. It does not preserve OAuth tokens in
+browser storage or bypass the fresh window's SDK handshake. A monotonically
+increasing checkpoint sequence prevents late requests from restoring an older
+page; a new launch replaces the writer identity.
 
 Use `pnpm --filter @app/activity-web build` to produce the library and branding
 assets. `dev` watches the library build for the API server to serve; it does not

@@ -14,6 +14,7 @@ import { installPlaybackPermission } from './playbackPermission';
 import { observeQueueFailures } from './queueErrors';
 import { applyPresentation, observeVideoPresentation } from './presentation';
 import { onDocumentExit } from './lifecycle';
+import { observeNavigation, restoredNavigation } from './navigation';
 import { createActivityController, preferredAccount } from './controller';
 import { chooseAccount, confirmServerChange, showWatchMenu, showLoading, showStartupError, showClosed, mountPlaybackPermission } from './ui';
 import './style.css';
@@ -30,6 +31,7 @@ let pollTimer;
 let accountDialog;
 let stopClient = () => {};
 let videoPresentation;
+let navigation;
 let status = 'Choose something to watch';
 const deviceId = crypto.randomUUID();
 const broker = window.JellyfinWatch;
@@ -50,8 +52,21 @@ async function stopNative() {
     videoPresentation?.stop();
 }
 
-async function installLaunch(next, _connection, isCurrent) {
+function watchNavigation(connection, route) {
+    navigation?.dispose();
+    navigation = observeNavigation(window, value => broker.normalizeNativeRoute(value, connection.serverId), (value, sequence, keepalive) =>
+        broker.saveNativeRestore(controller.session.exchange.appToken, connection.id, value, sequence, keepalive), route);
+}
+
+async function installLaunch(next, connection, isCurrent) {
     if (!isCurrent()) return;
+    const route = restoredNavigation(value => broker.normalizeNativeRoute(value, next.serverId), {
+        sameAccount: controller.selection?.id === connection.id && launch?.serverId === next.serverId,
+        currentRoute: navigation?.route || window.location.hash,
+        restoreRoute: next.restoreRoute, initialHash: window.location.hash, ready
+    });
+    navigation?.dispose();
+    navigation = undefined;
     await stopNative();
     if (!isCurrent()) return;
     // Both native query and cached view state belong to the selected account.
@@ -81,10 +96,12 @@ async function installLaunch(next, _connection, isCurrent) {
     ServerConnections.firstConnection = true;
     switching = false;
     if (ready) {
-        watchClient();
         // A hash navigation uses the current native document and Discord socket.
-        await appRouter.goHome();
-    } else window.location.hash = '#/home';
+        await appRouter.show(route);
+        if (!isCurrent()) return;
+        watchNavigation(connection, route);
+        watchClient();
+    } else window.location.hash = route;
 }
 
 async function retry(action, message) {
@@ -114,7 +131,12 @@ export async function bootstrapDiscord() {
     controller = createActivityController(broker, installLaunch, deviceId);
     const session = await retry(() => controller.start(), 'Connecting to Discord…');
     const stopPresentation = broker.observeActivityPresentation(session.discord, value => applyPresentation(document, value));
-    onDocumentExit(window, () => { closed = true; stopPresentation(); controller.dispose(); stopClient(); clearInterval(pollTimer); clearTimeout(reconnectTimer); });
+    onDocumentExit(window, () => {
+        navigation?.flush(true);
+        navigation?.dispose();
+        closed = true;
+        stopPresentation(); controller.dispose(); stopClient(); clearInterval(pollTimer); clearTimeout(reconnectTimer);
+    });
     const { data, party } = await retry(() => controller.load(), 'Loading your accounts…');
     const preferred = preferredAccount(data, party, broker.matchesPartyServer);
     if (preferred) {
@@ -199,6 +221,7 @@ function watchClient() {
 
 export async function finishDiscordBootstrap() {
     ready = true;
+    watchNavigation(controller.selection, window.location.hash);
     Events.on(SyncPlay.Manager, 'enabled', (_event, enabled) => { status = enabled ? 'Watching together' : 'Party disconnected'; });
     const stopObserving = observeMediaPlaying(document, value => value instanceof HTMLMediaElement, () => {
         status = 'Watching together';
@@ -215,6 +238,7 @@ export async function finishDiscordBootstrap() {
         polling = true;
         try {
             if (await controller.poll()) {
+                navigation?.dispose();
                 await stopNative();
                 reportError('The party changed server. Choose your account to join.');
                 void openAccounts(false, true, false);
@@ -244,6 +268,7 @@ export function openWatchMenu(anchor) {
             try { await controller.leave(); }
             catch { reportError('Could not confirm sign-out. Try leaving again.'); return; }
             closed = true;
+            navigation?.dispose();
             clearInterval(pollTimer);
             await stopNative();
             await showClosed({});
