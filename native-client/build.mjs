@@ -70,6 +70,14 @@ if (!process.argv.includes('--prepare-only')) {
     run('npm', ['run', 'build:production'], source, { JELLYFIN_VERSION: upstream.version, NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=6144' });
     await rm(path.join(root, 'dist'), { recursive: true, force: true });
     await cp(path.join(source, 'dist'), path.join(root, 'dist'), { recursive: true });
+    // A classic blocking script must run before every upstream module. Imports
+    // inside runtime.js are too late: their dependency constructors read storage.
+    await cp(path.join(root, 'src/storage.js'), path.join(root, 'dist/activity-storage.js'));
+    const nativeIndex = path.join(root, 'dist/index.html');
+    const nativeHtml = await readFile(nativeIndex, 'utf8');
+    if (nativeHtml.split('<head>').length !== 2) throw new Error('Native HTML bootstrap anchor changed');
+    await writeFile(nativeIndex, nativeHtml.replace('<head>', '<head><script src="activity-storage.js"></script>'));
+
     await cp(path.join(source, 'node_modules/hls.js/dist/hls.worker.js'), path.join(root, 'dist/libraries/hls.worker.js'));
     await cp(path.join(source, 'node_modules/hls.js/LICENSE'), path.join(root, 'dist/HLS-LICENSE.txt'));
     const licenseFile = ['LICENSE', 'LICENSE.txt', 'COPYING'].find(name => existsSync(path.join(source, name)));
