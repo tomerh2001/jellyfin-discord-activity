@@ -41,3 +41,5 @@
 [data-discord-video="true"][data-discord-preview="true"] .toast,
 [data-discord-video="true"][data-discord-preview="true"] .discordPlaybackPermission { visibility: hidden !important; pointer-events: none !important; }
 [data-discord-video="true"][data-discord-preview="true"] .videoSubtitles { font-size: clamp(9px, 4.5vh, 22px) !important; }
+[data-discord-video="true"][data-discord-preview="true"] .htmlvideoplayer::-webkit-media-text-track-container { font-size: clamp(9px, 4.5vh, 22px) !important; }
+[data-discord-video="true"][data-discord-preview="true"] .htmlvideoplayer::cue { font-size: clamp(9px, 4.5vh, 22px) !important; }
