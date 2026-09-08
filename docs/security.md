@@ -54,7 +54,7 @@ Discord's [proxy authentication protocol](https://docs.discord.com/developers/ac
 
 The published protocol signs a reusable token, **not the request method, URL, body, or a unique nonce**. A captured valid token can therefore be reused until it expires. This gate is additional protection, not proof that an HTTP client is physically inside Discord. OAuth identity, allowed server/user checks, active-instance verification, session expiry and host authorization remain required for all library and playback access. Neither CORS, referrers, client-provided instance IDs nor IP headers count as identity proof.
 
-Some Discord launch paths do not deliver the optional signature headers. In particular, the September 2026 web client requested a proxy ticket through its normal App Launcher flow but omitted it when directly launching a type-12 slash/context-menu interaction response. Verify actual iframe, asset, API and WebSocket requests rather than assuming all launch paths receive signatures. Missing signatures are denied in this mode.
+Some Discord launch paths do not deliver the optional signature headers. In September 2026, this deployment observed absent headers for both direct type-12 slash/context-menu launches and a normal App Launcher launch that had successfully obtained a proxy ticket. The client omitted the ticket in the direct command flow, but ticket presence alone did not establish header delivery. Verify actual iframe, asset, API and WebSocket requests rather than assuming a ticket or a launch path guarantees signatures. Missing signatures are denied in this mode.
 
 ### Cloudflare Worker attestation
 
