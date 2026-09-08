@@ -4,6 +4,7 @@ import {
 } from "@app/shared";
 import { env } from "../env.js";
 import { withRequestTimeout } from "./requestTimeout.js";
+import { notifySessionRejected } from "./sessionRecovery.js";
 
 function apiUrl(path: string): string {
   return `${env.apiBaseUrl}${path}`;
@@ -19,11 +20,12 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
   return response.json() as Promise<unknown>;
 }
 
-async function parseApiError(response: Response): Promise<Error> {
+async function parseApiError(response: Response, appToken?: string): Promise<Error> {
   const payload = await parseJsonResponse(response);
   const parsed = apiErrorSchema.safeParse(payload);
 
   if (parsed.success) {
+    if (appToken && response.status === 401 && parsed.data.error.code === "invalid_app_token") notifySessionRejected(appToken);
     return new Error(parsed.data.error.message);
   }
 
@@ -66,6 +68,6 @@ export async function logout(appToken: string): Promise<void> {
     const response = await fetch(apiUrl("/api/logout"), {
       method: "POST", headers: { Authorization: `Bearer ${appToken}` }, signal: requestSignal
     });
-    if (!response.ok) throw await parseApiError(response);
+    if (!response.ok) throw await parseApiError(response, appToken);
   });
 }

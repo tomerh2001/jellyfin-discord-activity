@@ -49,7 +49,9 @@ test('built document executes the unchanged classic storage bootstrap before nat
 }, () => {
     const html = readFileSync(new URL('../dist/index.html', import.meta.url), 'utf8');
     const firstScript = html.match(/<script\b[^>]*>/i)?.[0];
-    assert.equal(firstScript, '<script src="activity-storage.js">');
+    assert.equal(firstScript, '<script src="/activity-storage.js">');
+    assert.match(html, /<script src="\/activity-storage\.js"><\/script><script src="\/activity-session\.js"><\/script>/);
+    assert.equal(/<iframe\b/i.test(html), false, 'The native document must not embed another app frame');
     assert.equal(readFileSync(new URL('../dist/activity-storage.js', import.meta.url), 'utf8'), bootstrap);
     const window = {};
     vm.runInNewContext(readFileSync(new URL('../dist/activity-storage.js', import.meta.url), 'utf8'), { window });

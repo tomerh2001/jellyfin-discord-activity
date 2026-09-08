@@ -16,7 +16,11 @@ function fixture(command) {
         play() { this.plays++; return Promise.resolve(); }
         pause() { this.pauses++; }
     }
-    const document = { createElement: () => button, body: { appendChild: element => { element.isConnected = true; } },
+    const document = { createElement: (tag, options) => {
+        assert.equal(options, undefined, 'The native v0 polyfill rejects v1 customized-built-in options');
+        assert.equal(tag, 'div');
+        return { innerHTML: '', firstElementChild: button };
+    }, body: { appendChild: element => { element.isConnected = true; } },
         addEventListener: (type, handler) => listeners.set(type, handler), removeEventListener: type => listeners.delete(type) };
     const dispose = installPlaybackPermission({ document, HTMLMediaElement: Media }, () => command);
     return { Media, button, listeners, dispose, click: () => click(), block: media => listeners.get(PLAYBACK_BLOCKED_EVENT)({ target: media }) };
