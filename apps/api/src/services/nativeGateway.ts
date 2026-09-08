@@ -161,6 +161,10 @@ export function sanitizeNativeJson(viewer: NativeViewer, value: unknown, key = "
     if ("IsAdministrator" in result) result.IsAdministrator = false;
     if ("EnableRemoteAccess" in result) result.EnableRemoteAccess = false;
     if ("EnableContentDeletion" in result) result.EnableContentDeletion = false;
+    // This gateway supports library playback, not Live TV. Advertising Live TV
+    // makes native Home await a denied optional request before loading any rows.
+    if ("EnableLiveTvAccess" in result) result.EnableLiveTvAccess = false;
+    if ("EnableLiveTvManagement" in result) result.EnableLiveTvManagement = false;
     return result;
   }
   if (typeof value !== "string") return value;

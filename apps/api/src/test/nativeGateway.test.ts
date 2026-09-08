@@ -70,6 +70,9 @@ beforeEach(async () => {
       }
       return reply.code(204).send();
     }
+    const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
+    if (url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
+    if (url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
       if (item[2] === DENIED || deniedForUser.has(item[1]!)) return reply.code(failItemStatus).send({ error: TOKEN });
@@ -94,7 +97,7 @@ beforeEach(async () => {
     if (url.pathname.endsWith("/0.ts")) return reply.type("video/mp2t").send(Buffer.from("segment"));
     if (url.pathname === "/Sessions") return [{ Id: "other-session", DeviceId: "other" }, { Id: nativeSessionId({ deviceId: device(authorization) } as NativeViewer), NowPlayingItem: { Id: ITEM, Name: "Test movie" }, PlayState: { PositionTicks: 50_000_000, IsPaused: false } }];
     if (url.pathname.startsWith("/Sessions/")) return reply.code(204).send();
-    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
+    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true, EnableLiveTvAccess: true, EnableLiveTvManagement: true, EnableMediaPlayback: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
   } });
   upstreamAddress = await upstream.listen({ host: "127.0.0.1", port: 0 });
   const env = loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", JELLYFIN_DEFAULT_SERVER_URL: upstreamAddress, DATABASE_URL: "file:/tmp/native-unused.db" });
@@ -169,6 +172,24 @@ describe("native Jellyfin gateway", () => {
     expect(a.data.deviceId).not.toBe(b.data.deviceId);
     expect(a.data.groupId).toBe(b.data.groupId);
     expect(nativeSessionId({ deviceId: "fixture-device" } as NativeViewer)).toBe("acb2f86ad11cf671fc6bc0e5162dc386");
+  });
+
+  it("reports supported Home capabilities and preserves personalized resume, next-up and latest rows", async () => {
+    const { data } = await launch();
+    const user = (await app.inject({ url: `${data.baseUrl}/Users/Me` })).json();
+    expect(user.Policy).toMatchObject({ EnableLiveTvAccess: false, EnableLiveTvManagement: false, EnableMediaPlayback: true });
+    for (const path of [`/Users/${USER}/Items/Resume`, "/Shows/NextUp", `/Users/${USER}/Items/Latest`]) {
+      const response = await app.inject({ url: `${data.baseUrl}${path}?UserId=another&Limit=12&Fields=PrimaryImageAspectRatio` });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      const items = Array.isArray(body) ? body : body.Items;
+      expect(items).toEqual([{ Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } }]);
+      expect(calls.at(-1)?.query).toMatchObject({ UserId: USER, Limit: "12", Fields: "PrimaryImageAspectRatio" });
+    }
+    const before = calls.length;
+    expect((await app.inject({ url: `${data.baseUrl}/LiveTv/Programs/Recommended` })).statusCode).toBe(403);
+    expect((await app.inject({ url: `${data.baseUrl}/Users/another/Items/Resume` })).statusCode).toBe(403);
+    expect(calls).toHaveLength(before);
   });
 
   it.each(["/System/Configuration", "/Users/Public", "/Users/another", "/Users/Me/Policy", "/Items/../System/Configuration", "/Items/%252e%252e/System", "/Items/%2fSystem", "/Packages", "/Sessions/other/Playing", "/Videos/ActiveEncodings/other"])("denies unscoped route %s", async (path) => {
