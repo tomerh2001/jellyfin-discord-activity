@@ -43,6 +43,12 @@ async function request(path: string, token: string, method = "GET", body?: unkno
     });
     if (!response.ok) {
       const error = z.object({ error: z.object({ message: z.string(), code: z.string().optional() }) }).safeParse(payload);
+      // A proxy can replace an authentication error with HTML or an unknown
+      // envelope. Stop background polling, but never infer expired credentials
+      // or expose that untrusted response as the native dialog's message.
+      if (response.status === 401 && (!error.success || !error.data.error.code?.trim())) {
+        throw Object.assign(new Error("The Activity connection was rejected. Try connecting again."), { recoveryRequired: true });
+      }
       if (response.status === 401 && error.success && error.data.error.code === "invalid_app_token") notifySessionRejected(token);
       // These failures cannot be repaired by repeating a background party GET.
       // Surface the existing native retry UI without treating a missing ingress

@@ -81,6 +81,41 @@ it("surfaces ingress/bearer rejection to the native retry UI without renewing Di
     fetcher.mockResolvedValueOnce(Response.json({ error: { code: "jellyfin_login_failed", message: "Check your Jellyfin password." } }, { status: 401 }));
     const error = await connectAccount("current-session", { serverUrl: connection.serverUrl, username: "Viewer", password: "wrong" }).catch((value: unknown) => value);
     expect(error).toBeInstanceOf(Error);
+    expect(error).toHaveProperty("message", "Check your Jellyfin password.");
+    expect(error).not.toHaveProperty("recoveryRequired");
+    expect(listener).not.toHaveBeenCalled();
+  } finally { stop(); }
+});
+
+it.each([
+  ["HTML", "<html>fixture-private-response</html>", "text/html"],
+  ["plain text", "fixture-private-response", "text/plain"],
+  ["malformed JSON", '{"error":', "application/json"],
+  ["unknown envelope", JSON.stringify({ message: "fixture-private-response" }), "application/json"],
+  ["missing code", JSON.stringify({ error: { message: "fixture-private-response" } }), "application/json"],
+  ["blank code", JSON.stringify({ error: { code: " ", message: "fixture-private-response" } }), "application/json"],
+  ["invalid message", JSON.stringify({ error: { code: "invalid_app_token", message: null } }), "application/json"]
+])("pauses retryable polling for a %s 401 without guessing session expiry or exposing its body", async (_name, body, contentType) => {
+  const listener = vi.fn(); const stop = onSessionRejected(listener);
+  const fetcher = vi.fn().mockResolvedValue(new Response(body, { status: 401, headers: { "Content-Type": contentType } }));
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    await expect(getParty("current-session")).rejects.toMatchObject({
+      recoveryRequired: true, message: "The Activity connection was rejected. Try connecting again."
+    });
+    expect(listener).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  } finally { stop(); }
+});
+
+it("keeps non-authentication response failures separate from session recovery", async () => {
+  const listener = vi.fn(); const stop = onSessionRejected(listener);
+  const fetcher = vi.fn().mockResolvedValue(new Response("<html>fixture-private-response</html>", { status: 503 }));
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    const error = await getParty("current-session").catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toHaveProperty("message", "Request failed (503).");
     expect(error).not.toHaveProperty("recoveryRequired");
     expect(listener).not.toHaveBeenCalled();
   } finally { stop(); }
