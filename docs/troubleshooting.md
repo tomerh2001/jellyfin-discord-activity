@@ -1,6 +1,6 @@
 # Troubleshooting
 
-- **Connection interrupted:** allow the current Activity to reconnect, or use **Try connecting again**. Its parent retains the already-authorized SDK connection; recovering an app session requires fresh verification of the existing Discord authorization and live membership using the bearer already held in memory. If Discord denies that proof or no bearer remains, close the Activity and launch it again in the intended channel. Do not reload the authenticated iframe or substitute cached identity for failed verification.
+- **Connection interrupted:** allow the current Activity to reconnect, or use **Try connecting again**. The native Jellyfin document retains the already-authorized SDK connection; recovering an app session requires fresh verification of the existing Discord authorization and live membership using the bearer already held in memory. If Discord denies that proof or no bearer remains, close the Activity and launch it again in the intended channel. Do not reload the authenticated Activity document or substitute cached identity for failed verification.
 - **Server address refused:** enter the server base URL without `/web`, credentials or a query. Generic instances need publicly resolvable HTTPS. Only the exact operator default permits private networking or HTTP; redirects are intentionally rejected.
 - **Join the party's server:** connect an account to the Jellyfin server already selected for this Activity. A saved preferred server does not replace an active party. All viewers need access to the selected items.
 - **No audio on a phone:** if playback is blocked, use **Tap to play on this device** so the gesture reaches the actual video element. Check the player's volume and Discord's call controls. Browser autoplay, codecs and fullscreen depend on the actual Discord/device combination.
@@ -15,3 +15,7 @@
 - **403 before the UI loads:** inspect the configured ingress proof and exact hostname mapping. Do not disable the gate or replace it with Origin/Referer checks. See [security](security.md).
 
 Use redacted backend logs. Raw native Jellyfin console/network output can contain the temporary gateway capability; do not paste it into issues. Test desktop, iOS and Android separately before reporting cross-platform playback verified.
+
+- **Native startup stops before any library or dialog:** check packaged vendor chunks, including percent-encoded `@` scope names. Fastify must decode these paths behind the Discord ingress gate; missing chunks cannot be repaired by retrying account login.
+- **Startup fails after Home renders:** verify adapters against Jellyfin’s v0 webcomponents polyfill. Use native static markup for `is="emby-button"`; v1 `createElement` options are incompatible with that polyfill.
+- **Account change leaves Home blank:** the native view effect must observe ApiClient object identity after the view/query caches are cleared, including switches between accounts on the same server.

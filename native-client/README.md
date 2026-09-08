@@ -104,8 +104,8 @@ the `/jf/` path segment is a credential. A local HTTP smoke harness should load
 an actual response from the candidate origin. Intercepting the top-level
 document with Playwright `route.fulfill` can
 give Chromium the wrong address-space classification and trigger a misleading
-private-network CORS error. Runtime verification of this single-document revision
-is pending. Mobile viewport checks do not verify physical iOS or Android media
+private-network CORS error. Verify the complete compiled document after changing
+upstream integration patches. Mobile viewport checks do not verify physical iOS or Android media
 policies, background playback, or outer Discord fullscreen.
 
 Jellyfin Web is GPL-2.0-or-later. The compiled output includes its license and

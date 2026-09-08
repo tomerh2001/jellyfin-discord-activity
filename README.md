@@ -37,7 +37,7 @@ The Activity uses Jellyfin's responsive web client in Discord's embedded browser
 
 Layout changes keep the same player and Discord connection. If an app session is interrupted, the open Activity can obtain a new session after Discord verifies its existing in-memory authorization and current membership. A failed verification grants no access; native connection dialogs offer **Try again** for a temporary outage, or ask you to reopen the Activity if required. Leaving explicitly prevents automatic recovery.
 
-The single-document integration is implemented with focused automated coverage. Runtime verification of this revision is pending; responsive browser checks do not establish physical iOS/Android playback or guaranteed fullscreen in the outer Discord application.
+Verify the compiled client in a browser after integration changes. Responsive browser checks do not establish physical iOS/Android playback or guaranteed fullscreen in the outer Discord application.
 
 ## Deploy
 
