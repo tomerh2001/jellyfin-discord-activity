@@ -115,12 +115,16 @@ export async function getMe(appToken: string, signal?: AbortSignal): Promise<MeR
 }
 
 export async function logout(appToken: string): Promise<void> {
-  await fetch(apiUrl("/api/logout"), {
+  const response = await fetch(apiUrl("/api/logout"), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${appToken}`
     }
   });
+
+  if (!response.ok) {
+    throw await parseApiError(response);
+  }
 }
 
 export async function getJellyfinStatus(appToken: string, signal?: AbortSignal): Promise<JellyfinStatus> {

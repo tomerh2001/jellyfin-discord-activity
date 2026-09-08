@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getHealth, getPublicConfig } from "./client.js";
+import { getHealth, getPublicConfig, logout } from "./client.js";
 
 describe("api client config", () => {
   afterEach(() => {
@@ -30,6 +30,19 @@ describe("api client config", () => {
     // Prefer runtime /api/config when no VITE override is present; otherwise Vite env wins.
     expect(config.publicDiscordClientId).toBeTruthy();
     expect(typeof config.publicDiscordClientId).toBe("string");
+  });
+
+  it("requires a successful logout response before treating the session as revoked", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ error: { code: "unavailable", message: "Please retry." } }, 503))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", request);
+
+    await expect(logout("app-session")).rejects.toThrow("Please retry.");
+    await expect(logout("app-session")).resolves.toBeUndefined();
+    expect(request).toHaveBeenLastCalledWith(expect.stringMatching(/\/api\/logout$/), {
+      method: "POST", headers: { Authorization: "Bearer app-session" }
+    });
   });
 });
 
