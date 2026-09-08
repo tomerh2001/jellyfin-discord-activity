@@ -25,6 +25,7 @@ export async function requireAppSession(request: FastifyRequest): Promise<AppSes
   const token = getBearerToken(request.headers.authorization);
 
   if (!token) {
+    request.log.warn({ code: "missing_app_token" }, "Activity app session rejected");
     throw new AuthError("missing_app_token", "Missing bearer app token.");
   }
 
@@ -33,6 +34,7 @@ export async function requireAppSession(request: FastifyRequest): Promise<AppSes
     request.appSession = session;
     return session;
   } catch {
+    request.log.warn({ code: "invalid_app_token" }, "Activity app session rejected");
     throw new AuthError("invalid_app_token", "Invalid or expired app token.");
   }
 }

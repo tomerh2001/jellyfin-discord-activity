@@ -44,6 +44,12 @@ async function request(path: string, token: string, method = "GET", body?: unkno
     if (!response.ok) {
       const error = z.object({ error: z.object({ message: z.string(), code: z.string().optional() }) }).safeParse(payload);
       if (response.status === 401 && error.success && error.data.error.code === "invalid_app_token") notifySessionRejected(token);
+      // These failures cannot be repaired by repeating a background party GET.
+      // Surface the existing native retry UI without treating a missing ingress
+      // proof (or stripped bearer) as permission to resume/re-authorize a session.
+      if (response.status === 401 && error.success && ["discord_proxy_required", "missing_app_token"].includes(error.data.error.code ?? "")) {
+        throw Object.assign(new Error(error.data.error.message), { recoveryRequired: true });
+      }
       throw new Error(error.success ? error.data.error.message : `Request failed (${response.status}).`);
     }
     return payload;

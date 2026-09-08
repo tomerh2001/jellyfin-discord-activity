@@ -12,8 +12,13 @@ The build applies a small integration patch before compiling the upstream source
 - The native document loads the [session library](../apps/activity-web/README.md)
   once, before the adapter initializes. That library supplies Discord SDK
   authentication and the broker API without rendering a separate interface.
-  Native initialization loads the translation dictionary, authenticates Discord,
-  selects the Jellyfin connection, and then renders the native application.
+  In a Discord frame it starts the existing deduplicated authentication flow
+  immediately, overlapping native parsing and translation loading. Native
+  initialization awaits that same session, selects the Jellyfin connection,
+  and then renders the native application.
+- Both legacy settings and the React configuration provider use the configuration
+  packaged in the same build. They do not fetch `config.json` again at startup.
+  Configuration changes therefore require a new native build and release.
 - The existing header SyncPlay button, also available in the native video OSD,
   opens **Watch party**. Its native action sheet offers invitations, accounts,
   shared server changes, SyncPlay settings, local playback resume/halt when
@@ -128,6 +133,12 @@ give Chromium the wrong address-space classification and trigger a misleading
 private-network CORS error. Verify the complete compiled document after changing
 upstream integration patches. Mobile viewport checks do not verify physical iOS or Android media
 policies, background playback, or outer Discord fullscreen.
+
+For startup measurements, serve fixture responses over local HTTP and intercept
+only WebSockets. Playwright HTTP routing disables the browser cache, so a routed
+fixture cannot establish warm-cache behavior. Keep real compiled SDK code with
+explicitly modeled parent RPC delays; report those delays and distinguish
+synthetic Home/player timings from actual Discord or Jellyfin transcoding.
 
 Jellyfin Web is GPL-2.0-or-later. The compiled output includes its license and
 source metadata; this repository includes all modifications and the repeatable

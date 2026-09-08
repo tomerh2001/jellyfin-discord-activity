@@ -105,6 +105,93 @@ describe("Jellyfin upstream policy", () => {
     expect(leaked).toBe(0);
   });
 
+  it("reuses a validated connection while keeping each request's credentials separate", async () => {
+    let connections = 0;
+    const received: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      received.push(request.headers.authorization);
+      response.end("ok");
+    });
+    server.on("connection", () => { connections++; });
+    const port = await listen(server);
+    const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://pinned.example:${port}` };
+    dns.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+    const target = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    for (const authorization of ["fixture-first", "fixture-second", "fixture-first"]) {
+      expect(await (await upstreamFetch(target, "/Items", { headers: { Authorization: authorization } })).text()).toBe("ok");
+    }
+    expect(connections).toBe(1);
+    expect(received).toEqual(["fixture-first", "fixture-second", "fixture-first"]);
+    expect(dns).toHaveBeenCalledTimes(1);
+  });
+
+  it("never reuses a pooled connection for a different validated DNS pin", async () => {
+    const addresses: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      addresses.push(request.socket.localAddress);
+      response.end("ok");
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "0.0.0.0", resolve));
+    const port = (server.address() as { port: number }).port;
+    const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://pinned.example:${port}` };
+    dns.mockResolvedValueOnce([{ address: "127.0.0.1", family: 4 }]);
+    const first = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    await (await upstreamFetch(first, "/Items")).text();
+    dns.mockResolvedValueOnce([{ address: "127.0.0.2", family: 4 }]);
+    const second = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    await (await upstreamFetch(second, "/Items")).text();
+    await (await upstreamFetch(first, "/Items")).text();
+    expect(addresses).toEqual(["127.0.0.1", "127.0.0.2", "127.0.0.1"]);
+    expect(dns).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a reused streaming socket without poisoning later requests", async () => {
+    const server = createServer((request, response) => {
+      if (request.url === "/slow") { response.writeHead(200); response.write("first"); }
+      else response.end("ok");
+    });
+    const port = await listen(server);
+    const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://127.0.0.1:${port}` };
+    const target = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    await (await upstreamFetch(target, "/ready")).text();
+    const controller = new AbortController();
+    const response = await upstreamFetch(target, "/slow", { signal: controller.signal });
+    const body = response.text();
+    controller.abort();
+    await expect(body).rejects.toThrow();
+    expect(await (await upstreamFetch(target, "/ready")).text()).toBe("ok");
+  });
+
+  it("bounds concurrent sockets while completing a larger request burst", async () => {
+    let connections = 0;
+    const server = createServer((_request, response) => { setTimeout(() => response.end("ok"), 20); });
+    server.on("connection", () => { connections++; });
+    const port = await listen(server);
+    const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://127.0.0.1:${port}` };
+    const target = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    const results = await Promise.all(Array.from({ length: 70 }, async () => (await upstreamFetch(target, "/Items")).text()));
+    expect(results).toEqual(Array(70).fill("ok"));
+    expect(connections).toBeGreaterThan(1);
+    expect(connections).toBeLessThanOrEqual(64);
+  });
+
+  it("never evicts active streams when more validated destinations fill the pool registry", async () => {
+    const held: import("node:http").ServerResponse[] = [];
+    const server = createServer((_request, response) => { response.write("first"); held.push(response); });
+    const port = await listen(server);
+    const responses: Response[] = [];
+    for (let index = 0; index < 33; index++) {
+      const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://127.0.0.1:${port}/server-${index}` };
+      const target = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+      responses.push(await upstreamFetch(target, "/stream"));
+    }
+    expect(held).toHaveLength(33);
+    expect(held.every((response) => !response.destroyed)).toBe(true);
+    for (const response of held) response.end("last");
+    expect(await Promise.all(responses.map((response) => response.text()))).toEqual(Array(33).fill("firstlast"));
+  });
+
   it("aborts stalled transfers and bounds JSON bodies", async () => {
     const port = await listen(createServer((_request, _response) => undefined));
     const operator = { ...env(), JELLYFIN_DEFAULT_SERVER_URL: `http://127.0.0.1:${port}` };

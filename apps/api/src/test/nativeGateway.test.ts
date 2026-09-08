@@ -38,6 +38,9 @@ let socketAcceptDelay: number;
 let episodeMode: boolean;
 let denyGroupCreation: boolean;
 let largePlaylist: boolean;
+let itemDelay: number;
+let activeItemChecks: number;
+let maxItemChecks: number;
 
 function device(authorization: string): string { return /DeviceId="([^"]+)"/.exec(authorization)?.[1] ?? ""; }
 async function eventually(check: () => boolean): Promise<void> {
@@ -47,6 +50,7 @@ async function eventually(check: () => boolean): Promise<void> {
 
 beforeEach(async () => {
   sessions = []; calls = []; upstreamSockets = new Map(); deniedForUser = new Set(); failItemStatus = 404; slowTransferClosed = false; imageContentType = "image/png"; socketAcceptDelay = 0; episodeMode = false; denyGroupCreation = false; largePlaylist = false;
+  itemDelay = 0; activeItemChecks = 0; maxItemChecks = 0;
   upstream = Fastify({ logger: false });
   await upstream.register(websocketPlugin);
   upstream.addHook("preValidation", async (request) => {
@@ -77,6 +81,10 @@ beforeEach(async () => {
     if (url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
+      activeItemChecks++;
+      maxItemChecks = Math.max(maxItemChecks, activeItemChecks);
+      try { if (itemDelay) await new Promise((resolve) => setTimeout(resolve, itemDelay)); }
+      finally { activeItemChecks--; }
       if (item[2] === DENIED || deniedForUser.has(item[1]!)) return reply.code(failItemStatus).send({ error: TOKEN });
       return { Id: item[2], Name: "Test movie", ...(episodeMode ? { Type: "Episode", SeriesId: GROUP } : {}), MediaSources: [{ Id: item[2], Path: "/private/media/movie.mkv" }] };
     }
@@ -521,6 +529,73 @@ describe("native Jellyfin gateway", () => {
     const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`, payload: { PlayingQueue: [ITEM], PlayingItemPosition: 0 } });
     expect(result.statusCode).toBe(403);
     expect(calls.some((c) => c.path === "/SyncPlay/SetNewQueue")).toBe(false);
+  });
+
+  it("coalesces simultaneous image access checks without sharing them across viewers", async () => {
+    const first = await launch();
+    const second = await launch(await actor("viewer-2"));
+    itemDelay = 30;
+    const results = await Promise.all([first, second].flatMap(({ data }) => Array.from({ length: 4 }, () =>
+      app.inject({ url: `${data.baseUrl}/Items/${ITEM}/Images/Primary` }))));
+    expect(results.map((result) => result.statusCode)).toEqual(Array(8).fill(200));
+    const accessChecks = () => calls.filter((call) => call.path.endsWith(`/Items/${ITEM}`));
+    expect(accessChecks().map((call) => call.path).sort()).toEqual([
+      `/Users/${first.data.userId}/Items/${ITEM}`, `/Users/${second.data.userId}/Items/${ITEM}`
+    ].sort());
+    expect(calls.filter((call) => call.path.endsWith("/Images/Primary"))).toHaveLength(8);
+    first.viewer.itemAccess.get(ITEM)!.until = Date.now() - 1;
+    expect((await app.inject({ url: `${first.data.baseUrl}/Items/${ITEM}/Images/Primary` })).statusCode).toBe(200);
+    expect(accessChecks()).toHaveLength(3);
+  });
+
+  it("never caches failed item checks or skips each caller's media-source constraint", async () => {
+    const { data, viewer } = await launch();
+    itemDelay = 30;
+    const denied = await Promise.all(Array.from({ length: 4 }, () => app.inject({ url: `${data.baseUrl}/Items/${DENIED}/Images/Primary` })));
+    expect(denied.map((result) => result.statusCode)).toEqual(Array(4).fill(403));
+    expect(calls.filter((call) => call.path.endsWith(`/Items/${DENIED}`))).toHaveLength(1);
+    expect((await app.inject({ url: `${data.baseUrl}/Items/${DENIED}/Images/Primary` })).statusCode).toBe(403);
+    expect(calls.filter((call) => call.path.endsWith(`/Items/${DENIED}`))).toHaveLength(2);
+    const checked = await Promise.allSettled([service.requireItem(viewer, ITEM, ITEM), service.requireItem(viewer, ITEM, DENIED)]);
+    expect(checked[0]!.status).toBe("fulfilled");
+    expect(checked[1]).toMatchObject({ status: "rejected", reason: { code: "native_media_source_denied" } });
+    expect(calls.filter((call) => call.path.endsWith(`/Items/${ITEM}`))).toHaveLength(1);
+  });
+
+  it("checks a long queue with bounded concurrency and all viewer permissions before changing playback", async () => {
+    const first = await launch();
+    const second = await launch(await actor("viewer-2"));
+    itemDelay = 20;
+    const ids = Array.from({ length: 24 }, (_, index) => (index + 100).toString(16).padStart(32, "0"));
+    const mutation = app.inject({ method: "POST", url: `${first.data.baseUrl}/SyncPlay/SetNewQueue`, payload: { PlayingQueue: ids, PlayingItemPosition: 0 } });
+    const result = await mutation;
+    expect(result.statusCode).toBe(204);
+    expect(maxItemChecks).toBeGreaterThan(1);
+    expect(maxItemChecks).toBeLessThanOrEqual(8);
+    const checks = calls.filter((call) => /^\/Users\/[^/]+\/Items\/[a-f\d]+$/.test(call.path));
+    expect(checks).toHaveLength(48);
+    for (const user of [first.data.userId, second.data.userId]) {
+      expect(checks.filter((call) => call.path.startsWith(`/Users/${user}/`))).toHaveLength(24);
+    }
+    expect(calls.at(-1)?.path).toBe("/SyncPlay/SetNewQueue");
+    expect(activeItemChecks).toBe(0);
+  });
+
+  it("checks a late joiner's existing queue concurrently before joining native SyncPlay", async () => {
+    const current = await launch();
+    const ids = Array.from({ length: 24 }, (_, index) => (index + 100).toString(16).padStart(32, "0"));
+    service.parties.get(current.viewer.partyId)!.queueItemIds = ids;
+    itemDelay = 20;
+    const socket = await connect(current.data);
+    try {
+      const result = await app.inject({ method: "POST", url: `${current.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
+      expect(result.statusCode).toBe(204);
+      expect(maxItemChecks).toBeGreaterThan(1);
+      expect(maxItemChecks).toBeLessThanOrEqual(8);
+      expect(calls.filter((call) => call.path.startsWith(`/Users/${current.data.userId}/Items/`))).toHaveLength(24);
+      expect(calls.at(-1)?.path).toBe("/SyncPlay/Join");
+      expect(activeItemChecks).toBe(0);
+    } finally { socket.terminate(); }
   });
 
   it("distinguishes invalid, empty and oversized native queues without forwarding any mutation", async () => {
