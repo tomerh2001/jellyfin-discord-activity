@@ -24,17 +24,18 @@ export function matchesPartyServer(connection: Connection, party: Party) {
 }
 export const nativeLaunchSchema = z.object({
   baseUrl: z.string().regex(/^\/jf\/[a-zA-Z0-9_-]+$/), accessToken: z.string().min(1),
-  userId: z.string().min(1), serverId: z.string().min(1), deviceId: z.string().min(1), groupId: z.string().min(1)
+  userId: z.string().min(1), serverId: z.string().min(1), deviceId: z.string().min(1), groupId: z.string().min(1),
+  restoreRoute: z.string().nullable()
 });
 export type NativeLaunch = z.infer<typeof nativeLaunchSchema>;
 const quickConnectSchema = z.object({ id: z.string(), code: z.string(), expiresAt: z.string() });
 export type QuickConnect = z.infer<typeof quickConnectSchema>;
 
-async function request(path: string, token: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<unknown> {
+async function request(path: string, token: string, method = "GET", body?: unknown, signal?: AbortSignal, keepalive = false): Promise<unknown> {
   return withRequestTimeout(signal, 40_000, async requestSignal => {
     const response = await fetch(`${env.apiBaseUrl}${path}`, {
       method, headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: requestSignal
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: requestSignal, ...(keepalive ? { keepalive: true } : {})
     });
     const payload: unknown = await response.json().catch((error: unknown) => {
       if (requestSignal.aborted) throw error;
@@ -72,6 +73,9 @@ export async function joinParty(token: string, connectionId: string) {
 }
 export async function launchNative(token: string, connectionId: string, deviceId: string) {
   return nativeLaunchSchema.parse(await request("/api/native/launch", token, "POST", { connectionId, deviceId }));
+}
+export async function saveNativeRestore(token: string, connectionId: string, route: string, sequence: number, keepalive = false) {
+  await request("/api/native/restore", token, "PUT", { connectionId, route, sequence }, undefined, keepalive);
 }
 export async function startQuickConnect(token: string, serverUrl: string) {
   return quickConnectSchema.parse(await request("/api/connections/quick-connect", token, "POST", { serverUrl }));

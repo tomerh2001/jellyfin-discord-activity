@@ -14,6 +14,7 @@ export function createActivityController(broker, installLaunch, deviceId) {
     let session;
     let selection;
     let party;
+    let preferredConnectionId;
     const rejected = new Set();
     const issued = new Set();
     let refreshing = false;
@@ -85,6 +86,7 @@ export function createActivityController(broker, installLaunch, deviceId) {
         call,
         async load() {
             const [data, current] = await Promise.all([call('getConnections'), call('getParty')]);
+            preferredConnectionId = data.preferredConnectionId;
             party = current;
             return { data, party };
         },
@@ -98,7 +100,10 @@ export function createActivityController(broker, installLaunch, deviceId) {
                     throw new Error('This party is using another Jellyfin server. Connect an account on that server to join.');
                 }
                 if (!current || replaceParty) current = await call('joinParty', connection.id);
-                await call('savePreference', connection.id);
+                if (preferredConnectionId !== connection.id) {
+                    await call('savePreference', connection.id);
+                    preferredConnectionId = connection.id;
+                }
                 const launch = await call('launchNative', connection.id, deviceId);
                 const currentSelection = () => !closed && !leaving && generation === revision;
                 if (!currentSelection()) return;

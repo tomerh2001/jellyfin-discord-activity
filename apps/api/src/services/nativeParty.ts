@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { DiscordContext } from "@app/shared";
+import { normalizeNativeRoute, type DiscordContext } from "@app/shared";
 import type { FastifyInstance } from "fastify";
 import type { AppEnv } from "../env.js";
 import { renewActivityMembership } from "./appSession.js";
@@ -47,6 +47,8 @@ export type NativePartyDependencies = {
   membership: typeof renewActivityMembership;
   current: typeof assertConnectionCurrent;
 };
+type DisconnectedParty = { sessionId: string; discordUserId: string; connection: NativeConnection; at: number };
+type NavigationCheckpoint = { sessionId: string; discordUserId: string; capability: string; route: string; until: number; sequence: number };
 const CLIENT = "Jellyfin Discord Activity";
 // Keep the native queue while a renderer/popout reconnects. Socket loss still
 // leaves SyncPlay immediately, and membership/session expiry still fail closed.
@@ -97,6 +99,10 @@ export class NativePartyService {
   readonly viewers = new Map<string, NativeViewer>();
   private readonly bindings = new Map<string, string>();
   private readonly pending = new Map<string, Promise<unknown>>();
+  private readonly disconnected = new Map<string, Map<string, DisconnectedParty>>();
+  private readonly navigation = new Map<string, Map<string, NavigationCheckpoint>>();
+  private readonly latestViewers = new Map<string, Map<string, { capability: string; sessionId: string; discordUserId: string }>>();
+  private readonly disconnectWaiters = new Map<string, Set<() => void>>();
   private readonly unsubscribe: () => void;
   private readonly unsubscribeConnections: () => void;
   private readonly timer: ReturnType<typeof setInterval>;
@@ -118,6 +124,112 @@ export class NativePartyService {
     return JSON.stringify([c.guildId ?? "", c.channelId ?? "", c.instanceId]);
   }
 
+  private lockKey(session: AppSession): string {
+    const c = session.discordContext;
+    if (!c) throw new NativeError("activity_context_required");
+    // Cross-instance popout handoff and ordinary bind/launch must serialize.
+    return JSON.stringify([c.guildId ?? "", c.channelId ?? "", c.channelId ? "" : c.instanceId]);
+  }
+
+  private actorConnection(userId: string, connectionId: string): string { return JSON.stringify([userId, connectionId]); }
+
+  private async waitForRendererExit(session: AppSession, connection: NativeConnection): Promise<void> {
+    const context = session.discordContext!;
+    if (!context.guildId || !context.channelId) return;
+    const candidates = [...this.parties.values()].filter((party) => {
+      const viewers = [...party.viewers].map((cap) => this.viewers.get(cap)).filter((viewer): viewer is NativeViewer => !!viewer && !viewer.revoked);
+      return party.instanceId !== context.instanceId && party.guildId === context.guildId && party.channelId === context.channelId
+        && party.serverId === connection.serverId && party.serverUrl === connection.serverUrl
+        && viewers.length > 0 && viewers.every((viewer) => viewer.discordUserId === session.discordUserId
+          && viewer.connection.id === connection.id && viewer.connection.jellyfinUserId === connection.jellyfinUserId)
+        && viewers.some((viewer) => viewer.sockets > 0 || viewer.socketOpening);
+    });
+    if (candidates.length !== 1) return;
+    const party = candidates[0]!;
+    await new Promise<void>((resolve) => {
+      const waiters = this.disconnectWaiters.get(party.id) ?? new Set<() => void>();
+      const finish = () => {
+        clearTimeout(timer);
+        waiters.delete(changed);
+        if (!waiters.size) this.disconnectWaiters.delete(party.id);
+        resolve();
+      };
+      const changed = () => {
+        if (!this.parties.has(party.id) || [...party.viewers].every((cap) => {
+          const viewer = this.viewers.get(cap);
+          return !viewer || viewer.revoked || (!viewer.sockets && !viewer.socketOpening);
+        })) finish();
+      };
+      // The renderer can be created just before Discord closes the old socket.
+      // Wait briefly for its normal close; never disconnect an active player.
+      const timer = setTimeout(finish, 1_500);
+      waiters.add(changed);
+      this.disconnectWaiters.set(party.id, waiters);
+      changed();
+    });
+  }
+
+  private notifyDisconnect(partyId: string): void {
+    for (const notify of this.disconnectWaiters.get(partyId) ?? []) notify();
+  }
+
+  /** Explicit sign-out must not leave an otherwise reusable renderer checkpoint. */
+  forgetRestoration(sessionId: string, userId: string): void {
+    for (const [partyId, latest] of this.latestViewers) {
+      for (const [key, value] of latest) {
+        if (value.sessionId === sessionId && value.discordUserId === userId) {
+          this.navigation.get(partyId)?.delete(key);
+          this.disconnected.get(partyId)?.delete(key);
+        }
+      }
+    }
+    for (const records of [...this.navigation.values(), ...this.disconnected.values()]) {
+      for (const [key, value] of records) {
+        if (value.sessionId === sessionId && value.discordUserId === userId) records.delete(key);
+      }
+    }
+  }
+
+  private async restoreParty(session: AppSession, connection: NativeConnection): Promise<NativeParty | undefined> {
+    const context = session.discordContext!;
+    if (!context.guildId || !context.channelId) return undefined;
+    const actorKey = this.actorConnection(session.discordUserId, connection.id);
+    const candidates = [...this.parties.values()].filter((party) => {
+      const prior = this.disconnected.get(party.id)?.get(actorKey);
+      return party.instanceId !== context.instanceId && party.guildId === context.guildId && party.channelId === context.channelId
+        && party.serverId === connection.serverId && party.serverUrl === connection.serverUrl
+        && prior && Date.now() - prior.at <= EMPTY_GRACE_MS
+        && prior.connection.jellyfinUserId === connection.jellyfinUserId
+        && [...party.viewers].every((cap) => {
+          const viewer = this.viewers.get(cap);
+          return !viewer || viewer.revoked || (!viewer.sockets && !viewer.socketOpening && viewer.lastSocketClose > 0);
+        });
+    });
+    // Never guess between multiple previous parties, or take an active group.
+    if (candidates.length !== 1) return undefined;
+    const party = candidates[0]!;
+    const prior = this.disconnected.get(party.id)!.get(actorKey)!;
+    this.dependencies.current(this.env, session.discordUserId, prior.connection, context.guildId);
+    // Mark every old capability revoked before awaiting any upstream Leave.
+    // A second idle renderer cannot open a socket during the first cleanup.
+    await Promise.all([...party.viewers].map((cap) => this.viewers.get(cap))
+      .filter((viewer): viewer is NativeViewer => !!viewer).map((viewer) => this.revoke(viewer)));
+    this.dependencies.current(this.env, session.discordUserId, connection, context.guildId);
+    if (this.closed || !sessionStore.getSession(session.id) || this.parties.get(party.id) !== party
+      || this.disconnected.get(party.id)?.get(actorKey) !== prior || Date.now() - prior.at > EMPTY_GRACE_MS) {
+      throw new NativeError("native_session_expired", 401);
+    }
+    for (const [key, id] of this.bindings) if (id === party.id) this.bindings.delete(key);
+    party.context = context;
+    party.instanceId = context.instanceId;
+    party.emptySince = Date.now() + LAUNCH_GRACE_MS;
+    this.bindings.set(this.key(session), party.id);
+    this.disconnected.delete(party.id);
+    const routes = this.navigation.get(party.id);
+    if (routes) for (const key of routes.keys()) if (key !== actorKey) routes.delete(key);
+    return party;
+  }
+
   get(session: AppSession): NativeParty | undefined {
     const id = this.bindings.get(this.key(session));
     return id ? this.parties.get(id) : undefined;
@@ -134,12 +246,19 @@ export class NativePartyService {
 
   async bind(session: AppSession, connectionId: string): Promise<NativeParty> {
     const key = this.key(session);
-    return this.serial(key, async () => {
+    return this.serial(this.lockKey(session), async () => {
       await this.verifySession(session);
       const connection = await this.dependencies.resolve(this.env, session.discordUserId, connectionId, session.discordContext?.guildId);
       this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
       const existing = this.get(session);
       if (existing && existing.serverUrl === connection.serverUrl && existing.serverId === connection.serverId) return existing;
+      if (!existing) {
+        await this.waitForRendererExit(session, connection);
+        await this.verifySession(session);
+        this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
+        const restored = await this.restoreParty(session, connection);
+        if (restored) return restored;
+      }
       // Resolve and authenticate the replacement before disturbing the current party.
       const identity = { connection, deviceId: `activity-control-${randomBytes(16).toString("hex")}` };
       const created = await this.json(identity, "POST", "/SyncPlay/New", { GroupName: "Discord watch party" }) as { GroupId?: string };
@@ -171,7 +290,7 @@ export class NativePartyService {
 
   async launch(session: AppSession, connectionId: string, clientDeviceId: string) {
     // Binding changes and launches for every viewer share the same party lock.
-    return this.serial(this.key(session), async () => {
+    return this.serial(this.lockKey(session), async () => {
       await this.verifySession(session);
       const party = this.get(session);
       if (!party) throw new NativeError("party_not_bound", 409);
@@ -179,11 +298,11 @@ export class NativePartyService {
       this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
       if (party.serverId !== connection.serverId || party.serverUrl !== connection.serverUrl) throw new NativeError("party_server_mismatch", 409);
       const replaced = [...this.viewers.values()].filter((viewer) => viewer.partyId === party.id
-        && viewer.appSessionId === session.id && viewer.clientDeviceId === clientDeviceId);
+        && ((viewer.appSessionId === session.id && viewer.clientDeviceId === clientDeviceId)
+          || (viewer.discordUserId === session.discordUserId && viewer.connection.id === connectionId
+            && !viewer.sockets && !viewer.socketOpening && viewer.lastSocketClose > 0)));
       if (party.viewers.size - replaced.length >= this.env.ROOM_MAX_PARTICIPANTS) throw new NativeError("party_full", 409);
-      for (const viewer of this.viewers.values()) {
-        if (viewer.appSessionId === session.id && viewer.clientDeviceId === clientDeviceId) await this.revoke(viewer);
-      }
+      for (const viewer of replaced) await this.revoke(viewer);
       if (this.get(session)?.id !== party.id || !sessionStore.getSession(session.id)) throw new NativeError("party_binding_changed", 409);
       this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
       const capability = randomBytes(32).toString("base64url");
@@ -196,8 +315,48 @@ export class NativePartyService {
       this.viewers.set(capability, viewer);
       party.viewers.add(capability);
       party.emptySince = 0;
+      const actorKey = this.actorConnection(session.discordUserId, connectionId);
+      const latest = this.latestViewers.get(party.id) ?? new Map();
+      latest.set(actorKey, { capability, sessionId: session.id, discordUserId: session.discordUserId });
+      this.latestViewers.set(party.id, latest);
+      const checkpoint = this.navigation.get(party.id)?.get(actorKey);
+      const restoreRoute = checkpoint && checkpoint.until > Date.now() ? checkpoint.route : null;
+      if (checkpoint && restoreRoute) {
+        checkpoint.sessionId = session.id;
+        checkpoint.capability = capability;
+        checkpoint.sequence = 0;
+      }
       return { baseUrl: `/jf/${capability}`, accessToken: capability, userId: connection.jellyfinUserId,
-        serverId: connection.serverId, deviceId, groupId: party.groupId };
+        serverId: connection.serverId, deviceId, groupId: party.groupId, restoreRoute };
+    });
+  }
+
+  async navigationCheckpoint(session: AppSession, connectionId: string, update?: { route: string; sequence: number }): Promise<string | null> {
+    return this.serial(this.lockKey(session), async () => {
+      await this.verifySession(session);
+      const party = this.get(session);
+      if (!party) throw new NativeError("party_not_bound", 409);
+      const viewers = [...party.viewers].map((cap) => this.viewers.get(cap)).filter((viewer): viewer is NativeViewer =>
+        !!viewer && viewer.appSessionId === session.id && viewer.discordUserId === session.discordUserId
+        && viewer.connection.id === connectionId && this.active(viewer));
+      if (viewers.length !== 1) throw new NativeError("native_player_not_connected", 409);
+      const viewer = viewers[0]!;
+      this.dependencies.current(this.env, session.discordUserId, viewer.connection, session.discordContext?.guildId);
+      const key = this.actorConnection(session.discordUserId, connectionId);
+      if (this.latestViewers.get(party.id)?.get(key)?.capability !== viewer.capability) throw new NativeError("native_renderer_replaced", 409);
+      const records = this.navigation.get(party.id) ?? new Map<string, NavigationCheckpoint>();
+      const previous = records.get(key);
+      if (update) {
+        const route = normalizeNativeRoute(update.route, party.serverId);
+        if (!route || !Number.isSafeInteger(update.sequence) || update.sequence < 1) throw new NativeError("invalid_native_route", 400);
+        if (!previous || previous.capability !== viewer.capability || update.sequence > previous.sequence) {
+          records.set(key, { sessionId: session.id, discordUserId: session.discordUserId, capability: viewer.capability,
+            route, until: Date.now() + EMPTY_GRACE_MS, sequence: update.sequence });
+          this.navigation.set(party.id, records);
+        }
+      }
+      const checkpoint = records.get(key);
+      return checkpoint && checkpoint.until > Date.now() ? checkpoint.route : null;
     });
   }
 
@@ -230,6 +389,7 @@ export class NativePartyService {
     this.viewers.delete(viewer.capability);
     const party = this.parties.get(viewer.partyId);
     party?.viewers.delete(viewer.capability);
+    this.notifyDisconnect(viewer.partyId);
     if (party && !party.viewers.size) party.emptySince = Date.now();
     for (const abort of [...viewer.aborters]) abort();
     viewer.aborters.clear();
@@ -244,6 +404,8 @@ export class NativePartyService {
   }
 
   async revokeConnection(discordUserId: string, connectionId: string): Promise<void> {
+    const key = this.actorConnection(discordUserId, connectionId);
+    for (const records of [...this.navigation.values(), ...this.disconnected.values()]) records.delete(key);
     const parties = [...this.parties.values()].filter((party) => party.control.connection.id === connectionId);
     const cleanup = parties.map((party) => this.destroyParty(party));
     const viewers = [...this.viewers.values()].filter((v) => v.discordUserId === discordUserId && v.connection.id === connectionId);
@@ -257,6 +419,14 @@ export class NativePartyService {
     // group must stop waiting for this participant even after a mobile network drop.
     viewer.lastSeen = Date.now();
     viewer.lastSocketClose = Date.now();
+    const actorKey = this.actorConnection(viewer.discordUserId, viewer.connection.id);
+    if (this.latestViewers.get(viewer.partyId)?.get(actorKey)?.capability === viewer.capability) {
+      const records = this.disconnected.get(viewer.partyId) ?? new Map<string, DisconnectedParty>();
+      records.set(actorKey, { sessionId: viewer.appSessionId, discordUserId: viewer.discordUserId,
+        connection: viewer.connection, at: viewer.lastSocketClose });
+      this.disconnected.set(viewer.partyId, records);
+    }
+    this.notifyDisconnect(viewer.partyId);
     viewer.joined = false;
     const cleanup = this.leaveIdentity(viewer);
     viewer.socketCleanup = cleanup;
@@ -393,6 +563,12 @@ export class NativePartyService {
     if (this.sweeping || this.closed) return;
     this.sweeping = true;
     try {
+      for (const records of this.navigation.values()) {
+        for (const [key, checkpoint] of records) if (checkpoint.until <= Date.now()) records.delete(key);
+      }
+      for (const records of this.disconnected.values()) {
+        for (const [key, checkpoint] of records) if (Date.now() - checkpoint.at > EMPTY_GRACE_MS) records.delete(key);
+      }
       await Promise.all([...this.viewers.values()].map(async (viewer) => {
         if (!this.active(viewer) || (!viewer.sockets && ((viewer.lastSocketClose && Date.now() - viewer.lastSocketClose > EMPTY_GRACE_MS)
           || Date.now() - viewer.lastSeen > LAUNCH_GRACE_MS))) await this.revoke(viewer);
@@ -412,6 +588,10 @@ export class NativePartyService {
 
   async destroyParty(party: NativeParty): Promise<void> {
     this.parties.delete(party.id);
+    this.disconnected.delete(party.id);
+    this.navigation.delete(party.id);
+    this.latestViewers.delete(party.id);
+    this.notifyDisconnect(party.id);
     for (const [key, id] of this.bindings) if (id === party.id) this.bindings.delete(key);
     await Promise.all([...party.viewers].map((cap) => this.viewers.get(cap)).filter((v): v is NativeViewer => !!v).map((v) => this.revoke(v)));
     await this.leaveIdentity(party.control);

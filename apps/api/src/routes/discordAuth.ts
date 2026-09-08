@@ -6,13 +6,16 @@ import {
 } from "@app/shared";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
-import { createAppSession, getBearerToken, verifyAppToken } from "../services/appSession.js";
+import { compactVerify } from "jose";
+import { createAppSession, getBearerToken } from "../services/appSession.js";
 import { DiscordActivityError, DiscordOAuthError, allowedDiscordActor, exchangeDiscordCode, getDiscordCurrentUser, verifyDiscordActivityContext, verifyDiscordAuthorization } from "../services/discord.js";
 import { sessionStore } from "../services/sessionStore.js";
 import { AuthError, getAppSessionUser, requireAppSession, sendAuthError } from "../plugins/auth.js";
 import { JellyfinConnectionStore } from "../services/jellyfinConnections.js";
+import { getNativePartyService } from "../services/nativeParty.js";
 
 export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
+  const nativeParties = getNativePartyService(app);
   app.post("/api/discord/resume", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("CDN-Cache-Control", "no-store");
@@ -134,8 +137,18 @@ export const discordAuthRoutes: FastifyPluginAsync = async (app) => {
 
     if (token) {
       try {
-        const session = await verifyAppToken(app.envConfig, token);
-        sessionStore.deleteSession(session.id);
+        // Sign-out only removes access. Verify the signed actor/session even if
+        // Discord already removed that old renderer's Activity membership.
+        // Expiry blocks access, not revocation. Verify the signature before
+        // parsing claims so an expired token can still revoke its own checkpoint.
+        const { payload, protectedHeader } = await compactVerify(token, new TextEncoder().encode(app.envConfig.APP_SESSION_SECRET), { algorithms: ["HS256"] });
+        if (protectedHeader.typ !== "JWT") throw new Error("invalid_logout_token");
+        const claims = z.object({ sid: z.string().min(1), sub: z.string().min(1), exp: z.number().int().positive() }).parse(JSON.parse(new TextDecoder().decode(payload)));
+        const session = sessionStore.getSession(claims.sid);
+        if (!session || session.discordUserId === claims.sub) {
+          nativeParties.forgetRestoration(claims.sid, claims.sub);
+          sessionStore.deleteSession(claims.sid);
+        }
       } catch {
         request.log.debug("Ignoring logout for invalid app token.");
       }

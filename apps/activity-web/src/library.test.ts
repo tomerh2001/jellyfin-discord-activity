@@ -27,8 +27,8 @@ it("builds a standalone classic-script facade without creating a UI, accessing s
     const facade = window.JellyfinWatch;
     expect(Object.keys(facade).sort()).toEqual([
       "StartupTimeout", "clearActivitySession", "closeDiscordActivity", "connectAccount", "connectCommunity", "deleteConnection",
-      "getConnectedParticipants", "getConnections", "getParty", "joinParty", "launchNative", "logout", "matchesPartyServer",
-      "observeActivityPresentation", "onSessionRejected", "pollQuickConnect", "resumeActivitySession", "savePreference", "startActivitySession", "startQuickConnect"
+      "getConnectedParticipants", "getConnections", "getParty", "joinParty", "launchNative", "logout", "matchesPartyServer", "normalizeNativeRoute",
+      "observeActivityPresentation", "onSessionRejected", "pollQuickConnect", "resumeActivitySession", "saveNativeRestore", "savePreference", "startActivitySession", "startQuickConnect"
     ]);
     expect(Object.values(facade).every(value => typeof value === "function")).toBe(true);
     expect(window.document.documentElement.outerHTML).toBe(before);

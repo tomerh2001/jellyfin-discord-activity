@@ -4,8 +4,9 @@ export { logout } from "./api/client.js";
 export {
   getConnections, getParty, joinParty, launchNative, matchesPartyServer,
   savePreference, connectAccount, connectCommunity, deleteConnection,
-  startQuickConnect, pollQuickConnect
+  startQuickConnect, pollQuickConnect, saveNativeRestore
 } from "./api/native.js";
+export { normalizeNativeRoute } from "@app/shared";
 export { onSessionRejected } from "./api/sessionRecovery.js";
 export { closeDiscordActivity, getConnectedParticipants } from "./discord/sdk.js";
 export { observeActivityPresentation } from "./discord/presentation.js";

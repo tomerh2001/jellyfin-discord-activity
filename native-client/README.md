@@ -69,6 +69,20 @@ The build applies a small integration patch before compiling the upstream source
   policy can refuse it, and the Activity cannot force the outer Discord
   application window into fullscreen. See [Discord layouts](https://docs.discord.com/developers/activities/development-guides/layout)
   and [fullscreen requirements](https://developer.mozilla.org/en-US/docs/Web/API/Element/requestFullscreen).
+- Discord can replace the entire document when popping an Activity out or back
+  in, and can assign a new instance ID if the Activity was otherwise empty
+  ([upstream report](https://github.com/discord/embedded-app-sdk/issues/202)).
+  Fresh documents authenticate normally, recover the saved account, and restore
+  the last allowed browsing route from a short-lived server checkpoint. Native
+  SyncPlay supplies the queue, position and paused/playing state. Within the
+  same document, account reconnection retains the current browsing route; an
+  explicit account change starts at that account's Home.
+  Checkpoints are saved on native navigation, renewed while watching, and flushed
+  with keepalive on real document exit. They contain no tokens or playback commands.
+  A new verified instance can reclaim one recently disconnected group only for
+  the same user, connection, server and guild/channel, with no connected viewers.
+  Old capabilities are revoked. Explicit Leave or account removal invalidates
+  restoration. The Activity cannot suppress Discord's own refresh prompt.
 - [HLS.js](https://github.com/video-dev/hls.js) 1.6.13 uses its lockfile-pinned
   standalone worker asset. Rebundling the default
   stringified worker factory can leave a webpack module reference outside its

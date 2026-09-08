@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { connectAccount, getConnections, getParty, joinParty, launchNative, matchesPartyServer, deleteConnection, pollQuickConnect } from "./native.js";
+import { connectAccount, getConnections, getParty, joinParty, launchNative, matchesPartyServer, deleteConnection, pollQuickConnect, saveNativeRestore } from "./native.js";
 import { onSessionRejected } from "./sessionRecovery.js";
 
 const connection = { id: "account", serverUrl: "https://jellyfin.test", serverId: "server", serverName: "Library", jellyfinUserId: "jf-user", jellyfinUsername: "Viewer", kind: "personal", createdAt: "2026-09-08", updatedAt: "2026-09-08" };
@@ -27,12 +27,21 @@ it("retains explicit party binding and requires both server identity and URL to 
 });
 
 it("rejects a native launch pointing outside the opaque same-origin gateway", async () => {
-  const launch = { baseUrl: "/jf/capability", accessToken: "capability", userId: "jf-user", serverId: "server", deviceId: "device", groupId: "group" };
+  const launch = { baseUrl: "/jf/capability", accessToken: "capability", userId: "jf-user", serverId: "server", deviceId: "device", groupId: "group", restoreRoute: "#/search" };
   const fetcher = vi.fn().mockResolvedValueOnce(Response.json(launch))
     .mockResolvedValueOnce(Response.json({ ...launch, baseUrl: "https://untrusted.test/jf/capability" }));
   vi.stubGlobal("fetch", fetcher);
   expect(await launchNative("app-token", "account", "device")).toEqual(launch);
   await expect(launchNative("app-token", "account", "device")).rejects.toThrow();
+});
+
+it("sends the final navigation checkpoint with authentication and keepalive, never in the URL", async () => {
+  const fetcher = vi.fn().mockResolvedValue(Response.json({ ok: true })); vi.stubGlobal("fetch", fetcher);
+  await saveNativeRestore("app-token", "account", "#/search", 9, true);
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/native/restore", expect.objectContaining({
+    method: "PUT", headers: { Authorization: "Bearer app-token", "Content-Type": "application/json" },
+    body: JSON.stringify({ connectionId: "account", route: "#/search", sequence: 9 }), keepalive: true
+  }));
 });
 
 it("notifies recovery only for a rejected app session and removes the listener on teardown", async () => {

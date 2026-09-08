@@ -2,11 +2,13 @@ import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import WebSocket from "ws";
+import { SignJWT } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadEnv } from "../env.js";
 import { websocketPlugin } from "../plugins/websocket.js";
 import { nativePartyRoutes } from "../routes/nativeParty.js";
 import { nativeJellyfinRoutes } from "../routes/nativeJellyfin.js";
+import { discordAuthRoutes } from "../routes/discordAuth.js";
 import { createAppSession } from "../services/appSession.js";
 import { sessionStore, type AppSession } from "../services/sessionStore.js";
 import { getNativePartyService, nativeSessionId, type NativePartyService, type NativeViewer } from "../services/nativeParty.js";
@@ -114,6 +116,7 @@ beforeEach(async () => {
   await app.register(websocketPlugin);
   await app.register(nativePartyRoutes);
   await app.register(nativeJellyfinRoutes);
+  await app.register(discordAuthRoutes);
   appAddress = await app.listen({ host: "127.0.0.1", port: 0 });
 });
 
@@ -125,8 +128,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-async function actor(id = "viewer-1", instanceId = "test-instance") {
-  const created = await createAppSession({ env: app.envConfig, user: { id, username: id }, discordContext: { instanceId, guildId: "guild", channelId: "channel" } });
+async function actor(id = "viewer-1", instanceId = "test-instance", context = { guildId: "guild", channelId: "channel" }) {
+  const created = await createAppSession({ env: app.envConfig, user: { id, username: id }, discordContext: { instanceId, ...context } });
   sessions.push(created.session);
   return { ...created, headers: { authorization: `Bearer ${created.appToken}` } };
 }
@@ -137,7 +140,7 @@ async function launch(who?: Awaited<ReturnType<typeof actor>>) {
   expect(bound.statusCode).toBe(200);
   const launched = await app.inject({ method: "POST", url: "/api/native/launch", headers: owner.headers, payload: { connectionId: "connection", deviceId: randomUUID() } });
   expect(launched.statusCode).toBe(200);
-  const data = launched.json<{ baseUrl: string; accessToken: string; userId: string; serverId: string; deviceId: string; groupId: string }>();
+  const data = launched.json<{ baseUrl: string; accessToken: string; userId: string; serverId: string; deviceId: string; groupId: string; restoreRoute: string | null }>();
   return { owner, data, viewer: service.viewers.get(data.accessToken)! };
 }
 
@@ -147,7 +150,200 @@ async function connect(data: Awaited<ReturnType<typeof launch>>["data"]) {
   return socket;
 }
 
+async function disconnectRenderer(current: Awaited<ReturnType<typeof launch>>) {
+  const socket = await connect(current.data);
+  expect((await app.inject({ method: "POST", url: `${current.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } })).statusCode).toBe(204);
+  await eventually(() => current.viewer.joined);
+  expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: current.owner.headers,
+    payload: { connectionId: "connection", route: `#/details?id=${ITEM}&serverId=server`, sequence: 1 } })).statusCode).toBe(200);
+  socket.terminate();
+  await eventually(() => current.viewer.lastSocketClose > 0);
+  await current.viewer.socketCleanup;
+}
+
 describe("native Jellyfin gateway", () => {
+  it("hands a disconnected solo native group to a newly verified instance without rebuilding its queue", async () => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    const replacement = await launch(await actor("viewer-1", "popped-out-instance"));
+    expect(replacement.viewer.partyId).toBe(previous.viewer.partyId);
+    expect(replacement.data.restoreRoute).toBe(`#/details?id=${ITEM}&serverId=server`);
+    expect(service.get(replacement.owner.session)?.context.instanceId).toBe("popped-out-instance");
+    expect(service.get(previous.owner.session)).toBeUndefined();
+    expect(service.parties.get(replacement.viewer.partyId)?.queueItemIds).toEqual([ITEM]);
+    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+    expect(calls.filter(call => ["/SyncPlay/SetNewQueue", "/SyncPlay/Stop", "/SyncPlay/Unpause"].includes(call.path))).toHaveLength(0);
+    expect((await app.inject({ url: `${previous.data.baseUrl}/Users/Me` })).statusCode).toBe(401);
+    expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: previous.owner.headers,
+      payload: { connectionId: "connection", route: "#/home", sequence: 100 } })).statusCode).toBe(409);
+    expect((await app.inject({ url: "/api/native/restore?connectionId=connection", headers: replacement.owner.headers })).json().route).toBe(replacement.data.restoreRoute);
+  });
+
+  it("waits briefly for the prior renderer's natural socket close when the replacement arrives first", async () => {
+    const previous = await launch();
+    const socket = await connect(previous.data);
+    expect((await app.inject({ method: "POST", url: `${previous.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } })).statusCode).toBe(204);
+    await eventually(() => previous.viewer.joined);
+    const next = await actor("viewer-1", "popout-arrived-first");
+    const binding = service.bind(next.session, "connection");
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(previous.viewer.revoked).toBe(false);
+    expect(previous.viewer.sockets).toBe(1);
+    socket.terminate();
+    expect((await binding).id).toBe(previous.viewer.partyId);
+    expect(previous.viewer.revoked).toBe(true);
+    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+  });
+
+  it("replaces a disconnected renderer within the same instance and ignores out-of-order route saves", async () => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    const replacement = await launch(await actor());
+    expect(replacement.viewer.partyId).toBe(previous.viewer.partyId);
+    expect(previous.viewer.revoked).toBe(true);
+    expect(replacement.data.restoreRoute).toContain("#/details?");
+    for (const [sequence, route] of [[2, "#/movies?collectionType=movies"], [1, "#/home"]] as const) {
+      expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: replacement.owner.headers,
+        payload: { connectionId: "connection", route, sequence } })).statusCode).toBe(200);
+    }
+    expect((await app.inject({ url: "/api/native/restore?connectionId=connection", headers: replacement.owner.headers })).json().route).toBe("#/movies?collectionType=movies");
+    expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: previous.owner.headers,
+      payload: { connectionId: "connection", route: "#/home", sequence: 500 } })).statusCode).toBe(409);
+  });
+
+  it.each(["another-user", "another-guild", "another-channel", "another-connection", "another-server", "expired", "opening", "active", "explicit-logout", "revoked-connection"])("does not transfer a previous group for %s", async reason => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    let socket: WebSocket | undefined;
+    if (reason === "expired") vi.spyOn(Date, "now").mockReturnValue(Date.now() + 121_000);
+    if (reason === "opening") previous.viewer.socketOpening = true;
+    if (reason === "active") socket = await connect(previous.data);
+    if (reason === "explicit-logout") {
+      // Its membership may already have disappeared; signed logout still clears
+      // the old renderer checkpoint without granting any replacement access.
+      sessionStore.deleteSession(previous.owner.session.id);
+      expect((await app.inject({ method: "POST", url: "/api/logout", headers: previous.owner.headers })).statusCode).toBe(200);
+    }
+    if (reason === "revoked-connection") await service.revokeConnection(previous.viewer.discordUserId, "connection");
+    const current = await actor(reason === "another-user" ? "viewer-2" : "viewer-1", "replacement-instance", {
+      guildId: reason === "another-guild" ? "other-guild" : "guild", channelId: reason === "another-channel" ? "other-channel" : "channel"
+    });
+    const connectionId = reason === "another-connection" ? "other-connection" : reason === "another-server" ? "other-server" : "connection";
+    expect((await app.inject({ method: "POST", url: "/api/party", headers: current.headers, payload: { connectionId } })).statusCode).toBe(200);
+    expect(service.get(current.session)?.id).not.toBe(previous.viewer.partyId);
+    const response = await app.inject({ method: "POST", url: "/api/native/launch", headers: current.headers, payload: { connectionId, deviceId: randomUUID() } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().restoreRoute).toBeNull();
+    socket?.terminate();
+  });
+
+  it("does not select between ambiguous disconnected groups", async () => {
+    const first = await launch();
+    const active = await connect(first.data);
+    const second = await launch(await actor("viewer-1", "second-instance"));
+    active.terminate();
+    await eventually(() => first.viewer.lastSocketClose > 0);
+    await disconnectRenderer(second);
+    const third = await launch(await actor("viewer-1", "third-instance"));
+    expect(third.viewer.partyId).not.toBe(first.viewer.partyId);
+    expect(third.viewer.partyId).not.toBe(second.viewer.partyId);
+    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(3);
+  });
+
+  it("allows only the newest renderer to save navigation while an older document still has an open socket", async () => {
+    const previous = await launch();
+    const socket = await connect(previous.data);
+    const replacement = await launch(await actor());
+    expect(previous.viewer.sockets).toBe(1);
+    expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: replacement.owner.headers,
+      payload: { connectionId: "connection", route: "#/movies", sequence: 1 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: previous.owner.headers,
+      payload: { connectionId: "connection", route: "#/home", sequence: 200 } })).statusCode).toBe(409);
+    expect((await app.inject({ url: "/api/native/restore?connectionId=connection", headers: replacement.owner.headers })).json().route).toBe("#/movies");
+    socket.terminate();
+  });
+
+  it("does not let a predecessor socket close make the latest renderer's explicit Leave restorable", async () => {
+    const previous = await launch();
+    const oldSocket = await connect(previous.data);
+    const replacement = await launch(await actor());
+    const socket = await connect(replacement.data);
+    oldSocket.terminate();
+    await eventually(() => previous.viewer.lastSocketClose > 0);
+    expect((await app.inject({ method: "POST", url: "/api/logout", headers: replacement.owner.headers })).statusCode).toBe(200);
+    await eventually(() => replacement.viewer.revoked);
+    socket.terminate();
+    const third = await launch(await actor("viewer-1", "another-instance"));
+    expect(third.viewer.partyId).not.toBe(previous.viewer.partyId);
+    expect(third.data.restoreRoute).toBeNull();
+  });
+
+  it("revokes every old capability before asynchronous handoff cleanup can let another socket reopen", async () => {
+    const first = await launch();
+    const firstSocket = await connect(first.data);
+    const second = await launch(await actor());
+    firstSocket.terminate();
+    await eventually(() => first.viewer.lastSocketClose > 0);
+    await first.viewer.socketCleanup;
+    await disconnectRenderer(second);
+    const next = await actor("viewer-1", "popped-out-instance");
+    const originalFetch = service.dependencies.fetch;
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    service.dependencies.fetch = vi.fn(async (target, path, init) => {
+      if (path === "/SyncPlay/Leave") await blocked;
+      return originalFetch(target, path, init);
+    });
+    const handoff = service.bind(next.session, "connection");
+    try {
+      await eventually(() => first.viewer.revoked);
+      expect(second.viewer.revoked).toBe(true);
+      expect((await app.inject({ url: `${second.data.baseUrl}/Users/Me` })).statusCode).toBe(401);
+    } finally { release(); }
+    expect((await handoff).id).toBe(first.viewer.partyId);
+  });
+
+  it("requires current membership and a launched owned viewer before reading or writing a checkpoint", async () => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    const denied = await actor("viewer-1", "replacement-instance");
+    service.dependencies.membership = vi.fn(async () => { throw new Error("not a participant"); });
+    expect((await app.inject({ method: "POST", url: "/api/party", headers: denied.headers, payload: { connectionId: "connection" } })).statusCode).toBe(502);
+    expect(service.get(previous.owner.session)?.id).toBe(previous.viewer.partyId);
+    expect((await app.inject({ url: "/api/native/restore?connectionId=connection" })).statusCode).toBe(401);
+    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+  });
+
+  it("rejects credential-bearing routes and unverified logout without clearing a valid checkpoint", async () => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    for (const route of ["https://evil.example", `#/jf/${previous.data.accessToken}`, "#/login", "#/video", "#/details?id=invalid", "#/home?api_key=secret", "#/home?serverId=other", "#/search?query=https%3A%2F%2Fevil.example", "#/home?tab=0&tab=1"]) {
+      expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: previous.owner.headers,
+        payload: { connectionId: "connection", route, sequence: 2 } })).statusCode).toBe(400);
+    }
+    const invalidToken = previous.owner.appToken.slice(0, -5) + "wrong";
+    expect((await app.inject({ method: "POST", url: "/api/logout", headers: { authorization: `Bearer ${invalidToken}` } })).statusCode).toBe(200);
+    const replacement = await launch(await actor("viewer-1", "replacement-instance"));
+    expect(replacement.viewer.partyId).toBe(previous.viewer.partyId);
+    expect(replacement.data.restoreRoute).toContain("#/details?");
+    expect((await app.inject({ url: "/api/native/restore?connectionId=someone-elses", headers: replacement.owner.headers })).statusCode).toBe(409);
+  });
+
+  it("lets an expired correctly signed token revoke restoration while still denying every read", async () => {
+    const previous = await launch();
+    await disconnectRenderer(previous);
+    const token = await new SignJWT({ sid: previous.owner.session.id }).setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setSubject(previous.owner.session.discordUserId).setExpirationTime(Math.floor(Date.now() / 1000) - 1)
+      .sign(new TextEncoder().encode(app.envConfig.APP_SESSION_SECRET));
+    const headers = { authorization: `Bearer ${token}` };
+    expect((await app.inject({ url: "/api/native/restore?connectionId=connection", headers })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/logout", headers })).statusCode).toBe(200);
+    expect(sessionStore.getSession(previous.owner.session.id)).toBeUndefined();
+    const next = await launch(await actor("viewer-1", "replacement-instance"));
+    expect(next.viewer.partyId).not.toBe(previous.viewer.partyId);
+    expect(next.data.restoreRoute).toBeNull();
+  });
+
   it("shares one party service across route scopes and returns only an opaque launch token", async () => {
     const { owner, data } = await launch();
     expect(JSON.stringify(data)).not.toContain(TOKEN);
