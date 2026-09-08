@@ -125,6 +125,28 @@ party → Invite friends** explicitly opens Discord's invitation dialog. A launc
 in another text channel belongs to that channel; friends must join the same
 running Activity to share its SyncPlay group.
 
+Discord Rich Presence follows actual local playback, using the native player
+metadata without extra Jellyfin requests. Episodes show the series, season,
+episode number or range, and episode title; movies show their title and year.
+Playing media supplies a progress interval, adjusted for seeking and playback
+speed and native transcoding offsets. Paused/buffering media shows its position without a moving clock. Stop,
+account replacement and session recovery clear the previous title. Local media
+events must establish playback before a preparatory manager event can publish it.
+The manager event may also follow the DOM `playing` event or a failed play
+attempt. A 15-second local read refreshes metadata without a network request.
+
+Normal Activity authorization requests `identify` and `rpc.activities.write`.
+Presence uses the granted scopes in Discord's authenticated response; denied or
+unsupported presence never blocks the player or triggers another authorization
+flow. The publisher coalesces changes with at least five seconds between RPCs,
+keeps a stable playback clock, and shares its transport across account changes.
+Only human-readable media metadata and public Discord application artwork are
+published. Jellyfin tokens, server addresses, protected artwork, item identifiers
+and custom join secrets never enter the presence payload. Discord owns invitations
+and card rendering; its fixed application name remains **Jellyfin Watch**, and
+compact cards may omit the richer fields. See [Discord's Activity Rich Presence
+guide](https://docs.discord.com/developers/rich-presence/using-with-the-embedded-app-sdk).
+
 For browser diagnostics, never print native network logs or raw gateway paths:
 the `/jf/` path segment is a credential. A local HTTP smoke harness should load
 an actual response from the candidate origin. Intercepting the top-level

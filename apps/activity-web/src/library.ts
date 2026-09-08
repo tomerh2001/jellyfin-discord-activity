@@ -11,6 +11,7 @@ export { normalizeNativeRoute } from "@app/shared";
 export { onSessionRejected } from "./api/sessionRecovery.js";
 export { closeDiscordActivity, getConnectedParticipants } from "./discord/sdk.js";
 export { observeActivityPresentation } from "./discord/presentation.js";
+export { createWatchPresence } from "./discord/richPresence.js";
 
 export type { ActivitySession } from "./discord/session.js";
 export type { ActivityDiscordContext } from "./discord/sdk.js";

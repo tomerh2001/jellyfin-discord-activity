@@ -27,7 +27,7 @@ it("loads a passive facade outside Discord and overlaps one Activity handshake w
       window.eval(chunk.code);
       const facade = window.JellyfinWatch;
       expect(Object.keys(facade).sort()).toEqual([
-        "StartupTimeout", "clearActivitySession", "closeDiscordActivity", "connectAccount", "connectCommunity", "deleteConnection",
+        "StartupTimeout", "clearActivitySession", "closeDiscordActivity", "connectAccount", "connectCommunity", "createWatchPresence", "deleteConnection",
         "getConnectedParticipants", "getConnections", "getParty", "joinParty", "launchNative", "logout", "matchesPartyServer", "normalizeNativeRoute",
         "observeActivityPresentation", "onSessionRejected", "pollQuickConnect", "resumeActivitySession", "saveNativeRestore", "savePreference", "startActivitySession", "startQuickConnect"
       ]);
