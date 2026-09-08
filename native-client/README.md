@@ -25,7 +25,15 @@ The build applies a small integration patch before compiling the upstream source
 - The optional enable-playback button lives in the child frame so its click can
   satisfy mobile media gesture requirements. Its native `resumeGroupPlayback`
   call loads only this viewer's queue and changes their IgnoreWait setting; it
-  does not send a shared Unpause command. The button disappears on playback.
+  does not send a shared Unpause command. The button disappears after a successful
+  permission check or the media element's actual `playing` event. Native
+  `playbackstart` fires during preparation and cannot prove autoplay succeeded.
+- [HLS.js](https://github.com/video-dev/hls.js) 1.6.13 uses its lockfile-pinned
+  standalone worker asset. Rebundling the default
+  stringified worker factory can leave a webpack module reference outside its
+  scope (`ReferenceError: e is not defined`) and silently fall back to main-thread
+  processing. The unchanged worker and its Apache-2.0 license, including upstream
+  copyright notices, are copied into the build.
 
 The parent exchanges only bounded status messages after bootstrap. It never
 receives native network logs, media URLs or credentials. Changing accounts
