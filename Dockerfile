@@ -1,3 +1,9 @@
+FROM node:22-alpine AS native
+RUN apk add --no-cache git
+WORKDIR /app
+COPY native-client ./native-client
+RUN node native-client/build.mjs
+
 FROM node:24-alpine AS deps
 WORKDIR /app
 RUN corepack enable
@@ -18,6 +24,7 @@ ENV NODE_ENV=production
 COPY --from=build /prod ./
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/activity-web/dist ./apps/activity-web/dist
+COPY --from=native /app/native-client/dist ./native-client/dist
 RUN mkdir -p /data && chown node:node /data
 USER node
 EXPOSE 3000

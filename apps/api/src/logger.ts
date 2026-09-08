@@ -51,6 +51,10 @@ function loggerOptions(env: AppEnv) {
         "*.token",
         "*.appToken",
         "*.accessToken",
+        "*.AccessToken",
+        "*.Pw",
+        "*.Secret",
+        "*.encryptedAccessToken",
         "*.clientSecret",
         "*.secret",
         "*.authorization"
@@ -96,7 +100,9 @@ export function redactUrl(url: string | undefined): string | undefined {
   }
 
   const query = parsed.searchParams.toString();
-  const pathname = parsed.pathname.replace(/^(\/media\/(?:hls|direct)\/)[^/]+/, "$1[redacted]");
+  const pathname = parsed.pathname
+    .replace(/^(\/media\/(?:hls|direct)\/)[^/]+/, "$1[redacted]")
+    .replace(/^(\/jf\/)[^/]+/, "$1[redacted]");
   return `${pathname}${query ? `?${query}` : ""}`;
 }
 

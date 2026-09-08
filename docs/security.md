@@ -1,50 +1,28 @@
 # Security
 
-- Production requires Activity ingress proof on browser, API, media, and WebSocket requests: Discord proxy signatures by default, or an explicitly configured trusted Cloudflare Worker attestation. Direct requests to the origin are denied even with a spoofed Discord referrer or source-IP header.
-- Do not expose Discord client secrets or Jellyfin tokens in the browser bundle.
-- Use HTTPS/WSS in production.
-- Generate all session and token encryption secrets with at least 32 bytes of entropy.
-- Prefer `JELLYFIN_AUTH_MODE=per-user` when you want Jellyfin permissions enforced separately for each Discord user.
-- Use `JELLYFIN_AUTH_MODE=shared` only for trusted/private deployments where every authenticated Discord user should receive the same Jellyfin access.
-- In shared mode, create a dedicated Jellyfin user such as `discord-watch`, do not make it an administrator, and grant it access only to libraries intended for Discord viewing.
-- Do not use your personal Jellyfin admin account as the shared account. Every Discord user who can authenticate to the Activity can browse and prepare media visible to the shared Jellyfin user.
-- Set `TOKEN_ENCRYPTION_KEY` to a base64-encoded 32-byte key before linking Jellyfin accounts in production.
-- Per-user Jellyfin passwords are not stored. Shared-mode `JELLYFIN_SHARED_PASSWORD` is read from the backend environment and should be protected like any other server secret.
-- Jellyfin access tokens are encrypted before being written under `/data`.
-- Stream tickets are bearer URLs for `/media/...`. Default TTL is long enough for feature films (`STREAM_TICKET_TTL_SECONDS=14400`) and slides while the ticket is actively used, but tickets are still capped by the creating app session and should only be served over HTTPS.
-- WebSocket sync uses the short-lived app session JWT in the `/ws` query string. Use `wss://` in production and avoid logging query strings at the reverse proxy.
-- The backend enforces host-only shared playback commands; participant player events must not mutate room playback state.
-- The backend applies an app-wide rate limit. Tune `RATE_LIMIT_MAX` and `RATE_LIMIT_WINDOW` for your deployment and set `TRUST_PROXY=true` only when the app is behind a trusted reverse proxy.
-- Fastify request logs are structured JSON and redact authorization headers, cookies, common token fields, passwords, Discord OAuth codes, `/ws?token=...`, and other sensitive query parameters before writing URLs.
-- When `LOG_DIR` is set (Docker default `/data/logs`), the same redacted JSON is appended to `app.log` / `error.log`. Treat that directory as sensitive and do not commit log files.
-- Stream tickets are also invalidated when the app session that created them has expired, or has been revoked, even if `STREAM_TICKET_TTL_SECONDS` has not elapsed. In-flight transfers are cancelled on logout and at session expiry.
-- Invalid WebSocket payloads return an `invalid_json` or validation error message instead of crashing the room process.
-- Rooms without active WebSocket participants are removed after `ROOM_IDLE_TTL_SECONDS`; active rooms are skipped during idle cleanup.
-- `DEV_AUTH_MOCK=true` bypasses live Discord OAuth for local development and smoke tests. It must be `false` for public deployments, and the backend only accepts mock users when that flag is enabled.
+## Accounts and server access
 
-## Media proxy boundary
+Discord OAuth identifies the user. The bot-authenticated Activity Instance API verifies this application's instance, participants, guild and channel. Production also requires strong secrets, a server/user allowlist and the ingress proof described below. User-supplied context, referrers and IP headers are not membership proof.
 
-Each ticket stores its creating app session ID and a server-side map of opaque HLS asset IDs. The proxy accepts only those IDs, never arbitrary upstream URLs or paths. Manifest rewriting checks the original reference origin before stripping credentials, so external absolute references cannot be silently rebased onto Jellyfin. Nested playlists can issue their own assets within the same ticket.
+Personal Jellyfin tokens are encrypted in SQLite and scoped to their Discord owner and normalized server identity. Passwords are not stored. Quick Connect approval secrets stay on the backend and are session-bound. Community access requires an explicit selection and an allowed guild; its dedicated non-admin account shares watch history. Disconnecting removes the saved connection and cancels its active viewers before attempting upstream token revocation.
 
-Authenticated upstream fetches do not follow redirects. Upstream error bodies and Location headers are never returned to clients. Media responses are not cacheable; reverse-proxy access logs must redact or omit `/media/` ticket paths as well as authentication query strings.
+Generic targets require public HTTPS, checked DNS answers and pinned-IP HTTP/WebSocket connections. The only private/HTTP exception is the exact configured default URL. Redirects and paths escaping the configured base are rejected. Only the bundled, pinned Jellyfin Web client is served; remote servers cannot supply executable client code through the gateway.
 
-Transfers have bounded header, idle-body, and total-duration deadlines. Client disconnection and session revocation cancel both pending fetches and active body streams. Media transfers also renew Discord Activity membership at most once per minute, independently of WebSocket traffic, so a retained stream URL cannot avoid membership checks. Browser buffers can still contain bytes already delivered before cancellation. Selected audio/subtitles use transcoding because a static file response cannot apply those choices.
+## Native gateway and revocation
 
-Regression tests in `apps/api/src/test/mediaSecurity.test.ts` cover arbitrary same-origin API targets, query tampering, cross-ticket assets, nested HLS resources, redirects, ranges, expiry, logout, and streaming cancellation. `playbackCompatibility.test.ts` covers track selection and the VP8/Opus fallback.
+Browser credentials are temporary `/jf/<capability>/…` bearer URLs, not upstream tokens. Each capability belongs to a live Discord app session, connection, party and native device. The gateway replaces authentication, user/device/session identifiers, limits routes to supported client operations and checks item/media-source permissions. Administrative and arbitrary remote-control requests are denied. All selected queue items must be accessible to the party's active viewers.
 
-## Discord and room authorization
+The native client controls playback through Jellyfin SyncPlay. Everyone in the group can control playback; personal volume, tracks and quality are not synchronized. The gateway limits its clients to their bound group. Native Jellyfin users outside Discord may still discover/join that group directly; strict Discord-only group membership would need a Jellyfin server extension.
 
-Production startup rejects development authentication, missing allowlists, invalid public keys, and placeholder credentials. Discord OAuth establishes identity; the Bot-authenticated Activity Instance API establishes current membership and the actual channel/guild. An allowlisted user or participant in an allowlisted guild may connect. Every room read, write, and WebSocket hello must match that session's verified Activity context.
+Activity membership renews at most once per minute during API, WebSocket and media traffic. Failed renewal, logout, expiry and connection removal revoke capabilities and abort sockets and in-flight streams. Already delivered media buffers cannot be recalled. Lost browser sockets explicitly leave SyncPlay so Jellyfin10.11 does not wait indefinitely for a disconnected viewer. A short reconnect grace retains the party; empty groups are removed. Live groups and app sessions are not restored after a service restart.
 
-Membership renews at most once per minute through authenticated API, WebSocket, or media traffic. Failed verification revokes the session. Logout closes associated sockets and cancels live media transfers. Previously buffered media bytes cannot be recalled.
+The bundled client keeps gateway credentials in memory and does not register a service worker. Requests and gateway responses are uncached. Native gateway responses use a sandboxed content security policy and reject executable upstream content. Configure reverse proxies to omit capability paths and authentication query parameters; application logging redacts them, but upstream Jellyfin's own browser diagnostics can include gateway addresses. Never publish raw console/network dumps.
 
-**Leave watch party** first waits for successful app-session revocation, removes the local player and room UI, then calls the Embedded App SDK's `close(CLOSE_NORMAL)` to leave the Activity. It does not disconnect the voice call. If revocation fails, the session remains available for a retry; if Discord cannot close the frame, the signed-out screen directs the user to reopen `/watch` and never offers authentication on the old connection. Leaving cannot be submitted twice while a request is pending.
+**Leave watch party** waits for successful session revocation, removes the player, then closes the Discord Embedded SDK connection normally. The voice call remains connected. A failed revocation can be retried; a fresh `/watch` launch creates the next authenticated RPC session.
 
-This exit is deliberate: the September 2026 [Discord client](https://discord.com/assets/web.f803cc09a978437c.js) rejects `AUTHORIZE` and `AUTHENTICATE` on an already authenticated RPC socket. Reloading the iframe without closing it also left Discord's frame registration active during testing. The [SDK close implementation](https://github.com/discord/embedded-app-sdk/blob/main/src/Discord.ts) sends the normal CLOSE opcode; the client's Activity manager responds by leaving that application's Activity, without a voice-disconnect action. Test a fresh `/watch` launch after leaving, rather than trying to reset Discord's private client state.
+Discord command callbacks require exact-body Ed25519 verification, a bounded timestamp, the expected application and an allowed caller. Duplicate interaction IDs reuse the initial response. Playback commands additionally verify current voice channel, authoritative Activity membership and the caller's live native player. Selection menus include the party binding ID so stale results cannot change a new group. Responses are ephemeral and disable mentions.
 
-Slash and context-menu commands require exact-body Ed25519 verification, a five-minute timestamp window, the expected application ID, and an allowed caller. Duplicate interaction IDs reuse their initial response without repeating mutations. Controls verify the caller's current voice channel and Activity membership; only the connected host can change playback. Command responses are ephemeral and disable mentions.
-
-Room snapshots contain selection and playback state, never app sessions. They restore paused and without host ownership. Host departure transfers control to the first remaining connected participant; duplicate tabs do not create duplicate participants or prematurely remove a host.
+The connection, native-gateway and Discord security test suites cover URL/DNS/redirect isolation, stored-token ownership, Quick Connect, native authorization, real WebSocket upgrades, queue permissions, logout/expiry and stream cancellation.
 
 ## Discord Activity ingress
 
@@ -56,7 +34,7 @@ With `NODE_ENV=production`, the ingress gate is mandatory and cannot be disabled
 
 Discord's [proxy authentication protocol](https://docs.discord.com/developers/activities/development-guides/multiplayer-experience#validating-proxy-request-headers) sends `X-Discord-Proxy-Payload` (base64), `X-Signature-Ed25519`, and `X-Signature-Timestamp`. The verifier checks the Ed25519 signature over the decoded payload bytes, the timestamp's exact match to `created_at`, a bounded future clock skew, and `expires_at`. Invalid encodings and payloads fail closed. Discord's JavaScript sample encodes the signature as base64 while its Python sample uses hex; this implementation strictly accepts either representation of a 64-byte signature.
 
-The published protocol signs a reusable token, **not the request method, URL, body, or a unique nonce**. A captured valid token can therefore be reused until it expires. This gate is additional protection, not proof that an HTTP client is physically inside Discord. OAuth identity, allowed server/user checks, active-instance verification, session expiry and host authorization remain required for all library and playback access. Neither CORS, referrers, client-provided instance IDs nor IP headers count as identity proof.
+The published protocol signs a reusable token, **not the request method, URL, body, or a unique nonce**. A captured valid token can therefore be reused until it expires. This gate is additional protection, not proof that an HTTP client is physically inside Discord. OAuth identity, allowed server/user checks, active-instance verification, session expiry and party authorization remain required for all library and playback access. Neither CORS, referrers, client-provided instance IDs nor IP headers count as identity proof.
 
 Some Discord launch paths do not deliver the optional signature headers. In September 2026, this deployment observed absent headers for both direct type-12 slash/context-menu launches and a normal App Launcher launch that had successfully obtained a proxy ticket. The client omitted the ticket in the direct command flow, but ticket presence alone did not establish header delivery. Verify actual iframe, asset, API and WebSocket requests rather than assuming a ticket or a launch path guarantees signatures. Missing signatures are denied in this mode.
 

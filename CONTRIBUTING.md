@@ -49,7 +49,7 @@ pnpm smoke
 - Zod validation for HTTP and WebSocket payloads (`packages/shared`)
 - Do not log tokens, passwords, OAuth codes, or stream ticket secrets
 - Prefer remux / fMP4 HLS for quality; treat progressive WebM as a Linux Discord compatibility path
-- Keep production as a single HTTPS origin for `/`, `/api`, `/ws`, and `/media`
+- Keep production as a single HTTPS origin for `/`, `/api`, `/jf`, and `/jellyfin-web`
 
 ## Pull requests
 

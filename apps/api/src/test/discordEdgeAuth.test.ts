@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
 import { loggerConfig } from "../logger.js";
-import { createAppSession } from "../services/appSession.js";
 import { createDiscordEdgeVerifier, discordEdgeHeader } from "../services/discordEdgeAuth.js";
 
 const secret = randomBytes(32).toString("hex");
@@ -34,7 +33,7 @@ describe("Cloudflare Worker origin attestation", () => {
   it("rejects direct UI, API, media and forged edge headers while admitting attested requests", async () => {
     const app = await buildApp(loadEnv(input));
     try {
-      for (const url of ["/", "/assets/app.js", "/api/config", "/api/health", "/media/direct/stolen/stream", "/unknown", "/ws"]) {
+      for (const url of ["/", "/assets/app.js", "/api/config", "/api/health", "/jf/stolen/Videos/0123456789abcdef0123456789abcdef/stream", "/unknown", "/jf/stolen/socket"]) {
         expect((await app.inject({ url })).statusCode, url).toBe(401);
         expect((await app.inject({ url, headers: { [discordEdgeHeader]: "forged", "cf-worker": "discordsays.com" } })).statusCode, url).toBe(401);
       }
@@ -49,7 +48,7 @@ describe("Cloudflare Worker origin attestation", () => {
         "x-signature-timestamp": timestamp, "x-discord-proxy-payload": payload.toString("base64"),
         "x-signature-ed25519": sign(null, payload, privateKey).toString("base64")
       } })).statusCode).toBe(401);
-      expect((await app.inject({ url: "/media/direct/stolen/stream", headers: attested })).statusCode).toBe(403);
+      expect((await app.inject({ url: "/jf/stolen/Videos/0123456789abcdef0123456789abcdef/stream", headers: attested })).statusCode).toBe(401);
       const sessionRequired = await app.inject({ url: "/api/me", headers: attested });
       expect(sessionRequired.statusCode).toBe(401);
       expect(sessionRequired.json().error.code).toBe("missing_app_token");
@@ -89,12 +88,11 @@ describe("Cloudflare Worker origin attestation", () => {
     const env = loadEnv({ ...input, DEV_AUTH_MOCK: "true" });
     const app = await buildApp(env);
     try {
-      const { appToken } = await createAppSession({ env, user: { id: "edge-ws", username: "Member" }, discordContext: { instanceId: "edge-ws-room" } });
       const base = await app.listen({ host: "127.0.0.1", port: 0 });
-      const url = `${base}/ws?instanceId=edge-ws-room&token=${encodeURIComponent(appToken)}`;
+      const url = `${base}/jf/stolen/socket`;
       expect(await upgradeStatus(url, {})).toBe(401);
       expect(await upgradeStatus(url, { [discordEdgeHeader]: "forged", "cf-worker": "discordsays.com" })).toBe(401);
-      expect(await upgradeStatus(url, attested)).toBe(101);
+      expect(await upgradeStatus(url, attested)).toBe(401);
     } finally { await app.close(); }
   });
 

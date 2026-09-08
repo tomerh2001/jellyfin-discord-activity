@@ -15,6 +15,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
+          node-version: 22
+      - run: node native-client/build.mjs
+      - run: node --test native-client/test/*.test.mjs
+      - uses: actions/setup-node@v4
+        with:
           node-version: 24
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
@@ -48,6 +53,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.licenses=MIT AND GPL-2.0-or-later
           cache-from: type=gha
           cache-to: type=gha,mode=max

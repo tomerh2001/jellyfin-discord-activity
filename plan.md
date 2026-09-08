@@ -1,3 +1,5 @@
+> Historical design for the retired custom player. Current native Jellyfin Web/SyncPlay architecture is documented in README.md and docs/.
+
 # PLAN.md — Discord Activity for Jellyfin Watch Parties
 
 Last updated: 2026-07-06
