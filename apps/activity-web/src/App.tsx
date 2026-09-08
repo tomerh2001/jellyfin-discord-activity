@@ -101,7 +101,7 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
       const eligible = data.connections.filter(connection => !current || matchesPartyServer(connection, current));
       const preferred = eligible.find(connection => connection.id === data.preferredConnectionId) ?? (eligible.length === 1 ? eligible[0] : undefined);
       if (preferred) await select(preferred); else setAccountsOpen(true);
-    }).catch(() => { setError("Could not load your Jellyfin accounts. Try again."); });
+    }).catch(cause => { setError(cause instanceof Error ? cause.message : "Could not load your Jellyfin accounts. Try again."); setAccountsOpen(true); });
   }, [token, select]);
 
   useEffect(() => {
@@ -169,6 +169,7 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
       <nav aria-label="Watch party"><button disabled={leaving} onClick={() => { void invite(); }}>Invite friends</button><button disabled={leaving || pending} onClick={() => { setChangingServer(false); setAccountsOpen(true); }}>Accounts</button><button disabled={leaving || pending || !party} onClick={() => { setChangingServer(true); setAccountsOpen(true); }}>Change server</button><button disabled={leaving} onClick={() => { void leave(); }}>{leaving ? "Leaving…" : "Leave watch party"}</button></nav>
     </header>
     {error && <div className="shell-notice" role="alert">{error}<button onClick={() => { setError(""); void refresh().then(() => setAccountsOpen(true)).catch(() => setError("Could not load your accounts. Try again.")); }}>Try again</button></div>}
+    <div className="activity-content">
     {launch && <NativeClient key={launch.accessToken} launch={launch} onStatus={nativeStatus} />}
     {!launch && !connections && <div className="centered" role="status">Loading your accounts…</div>}
     {pending && <div className="connecting-overlay" role="status">Joining your watch party…</div>}
@@ -184,5 +185,6 @@ function ActivityShell({ session: { discord, exchange } }: { session: Session })
         <button className="primary-button" disabled={pending} onClick={() => { void select(proposedServer, true).catch(() => { setProposedServer(undefined); setError("Could not change the party’s server. Choose an account to try again."); }); }}>Confirm change server</button></div>
     </section></div>}
     {launch && <div className="party-status" role="status">{status}</div>}
+    </div>
   </main>;
 }

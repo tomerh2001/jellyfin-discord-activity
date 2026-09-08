@@ -6,6 +6,7 @@ import SyncPlay from 'plugins/syncPlay/core';
 import playbackPermissionManager from 'plugins/syncPlay/ui/playbackPermissionManager';
 import Events from 'utils/events';
 import { waitForParent, sendStatus } from './bridge';
+import { observeMediaPlaying } from './mediaEvents';
 import './style.css';
 
 let launch;
@@ -74,10 +75,11 @@ export async function finishDiscordBootstrap() {
     });
     window.addEventListener('pagehide', () => clearTimeout(reconnectTimer), { once: true });
     Events.on(ServerConnections, 'localusersignedout', () => sendStatus(window, launch.nonce, 'signed-out'));
-    Events.on(playbackManager, 'playbackstart', () => {
+    const stopObserving = observeMediaPlaying(document, value => value instanceof HTMLMediaElement, () => {
         document.querySelector('.discordPlaybackPermission')?.remove();
         sendStatus(window, launch.nonce, 'playing');
     });
+    window.addEventListener('pagehide', stopObserving, { once: true });
     Events.on(playbackManager, 'playbackstop', () => sendStatus(window, launch.nonce, 'browsing'));
     apiClient.ensureWebSocket();
     if (apiClient.isWebSocketOpen()) await joinParty();

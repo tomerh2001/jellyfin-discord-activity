@@ -26,11 +26,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid #00a4dc; outline-
 .participants { display: flex; padding-left: .3rem; }
 .participants > span { display: grid; place-items: center; margin-left: -.3rem; width: 1.8rem; height: 1.8rem; background: #514196; border: 2px solid #171717; border-radius: 50%; font-size: .75rem; overflow: hidden; }
 .participants img { width: 100%; height: 100%; }
+.activity-content { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .native-client { flex: 1; width: 100%; min-height: 0; border: 0; background: #101010; }
 .centered { min-height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 2rem; text-align: center; }
 .welcome-logo { width: 6rem; height: 6rem; border-radius: 1.5rem; }
 .accounts-page { flex: 1; overflow: auto; padding: clamp(1rem, 4vw, 3rem); }
-.accounts-overlay { position: fixed; inset: 4.2rem 0 0; z-index: 10; overflow: auto; background: #090909e8; padding: 1.5rem; }
+.accounts-overlay { position: absolute; inset: 0; z-index: 10; overflow: auto; background: #090909e8; padding: 1.5rem; }
 .connections-panel { max-width: 38rem; margin: 0 auto; padding: clamp(1rem, 4vw, 2rem); background: #1b1b1b; border: 1px solid #333; border-radius: 1rem; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 h1 { font-size: 1.8rem; margin: .2rem 0 1rem; }
@@ -52,24 +53,26 @@ input { min-width: 0; width: 100%; border: 1px solid #555; border-radius: .4rem;
 .error, .connections-panel p.error { color: #ffb4ab; }
 .shell-notice { background: #3c2424; padding: .6rem 1rem; display: flex; gap: 1rem; align-items: center; justify-content: space-between; font-size: .9rem; }
 .party-status { color: #bdbdbd; font-size: .65rem; padding: .15rem .6rem; background: #171717; }
-.connecting-overlay { position: absolute; inset: 4rem 0 0; z-index: 20; display: grid; place-items: center; background: #101010e8; }
+.connecting-overlay { position: absolute; inset: 0; z-index: 20; display: grid; place-items: center; background: #101010e8; }
 @media (max-width: 640px) {
   .activity-toolbar { gap: .4rem; padding: .4rem; flex-wrap: wrap; }
   .brand strong { font-size: .85rem; }
   .brand span { max-width: 55vw; }
   .brand img { width: 2rem; height: 2rem; }
   .activity-toolbar nav { width: 100%; }
-  .activity-toolbar nav button { flex: 1; min-height: 2.65rem; }
-  .accounts-overlay { inset: 7rem 0 0; padding: .5rem; }
+  button { min-height: 2.75rem; }
+  .activity-toolbar nav button { flex: 1; min-height: 2.75rem; }
+  .accounts-overlay { padding: .5rem; }
   .connections-panel { border-radius: .6rem; }
   .panel-heading { align-items: start; }
+  .panel-heading h1 { font-size: 1.4rem; }
+  .panel-heading button { font-size: .8rem; padding: .5rem; }
 }
 @media (max-height: 450px) {
   .activity-toolbar { flex-wrap: nowrap; padding: .25rem .5rem; }
   .activity-toolbar nav { width: auto; }
   .activity-toolbar nav button { min-height: 2.2rem; padding: .4rem .55rem; }
   .brand span, .participants, .party-status { display: none; }
-  .accounts-overlay { inset: 3rem 0 0; }
 }
 
 .confirmation-overlay { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; background: #000b; padding: 1rem; }

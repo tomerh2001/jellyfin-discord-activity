@@ -8,11 +8,15 @@ import { NativeError, nativeAuthorization, nativeSessionId, type NativePartyServ
 const ID = "[a-zA-Z0-9_-]{1,128}";
 const SECRET_KEYS = new Set(["apikey", "api_key", "access_token", "accesstoken", "token", "password", "pw", "authorization", "x-emby-token", "x-mediabrowser-token"]);
 const MAX_JSON = 16 * 1024 * 1024;
-const MAX_PLAYLIST = 2 * 1024 * 1024;
+// Native VOD playlists repeat the complete transcode query for every segment.
+// Feature films can exceed 2MiB; retain a bounded 32MiB allowance.
+const MAX_PLAYLIST = 32 * 1024 * 1024;
 const MAX_SOCKET_BUFFER = 1024 * 1024;
 const readRules = [
   /^\/System\/Info(?:\/Public)?$/i,
   /^\/System\/Endpoint$/i,
+  /^\/Playback\/BitrateTest$/i,
+  new RegExp(`^/Videos/${ID}/Trickplay/[0-9]+/(?:tiles\\.m3u8|[0-9]+\\.jpg)$`, "i"),
   /^\/(?:UserViews|GetUTCTime)$/i,
   /^\/Branding\/Configuration$/i,
   /^\/Localization\/(?:Cultures|Countries|ParentalRatings|Options)$/i,
@@ -149,6 +153,7 @@ export function sanitizeNativeJson(viewer: NativeViewer, value: unknown, key = "
     const result: Record<string, unknown> = {};
     for (const [name, part] of Object.entries(record(value))) {
       if (SECRET_KEYS.has(name.toLowerCase())) continue;
+      if (name === "CustomCss") { result[name] = ""; continue; }
       if (["InternalMetadataPath", "CachePath", "LogPath", "ProgramDataPath", "WebPath", "TranscodingTempPath", "PasswordResetProviderId", "AuthenticationProviderId"].includes(name)) continue;
       result[name] = sanitizeNativeJson(viewer, part, name);
     }
@@ -246,6 +251,7 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
     if (!response.ok) {
       await response.body?.cancel();
       if (response.status === 401) await service.revoke(viewer);
+      if (response.status === 403 && /^\/SyncPlay\/Join$/i.test(path)) throw new NativeError("syncplay_join_not_allowed", 403);
       const status = response.status >= 400 && response.status <= 599 ? response.status : 502;
       if (response.status === 416 && response.headers.get("content-range")) reply.header("Content-Range", response.headers.get("content-range"));
       dispose();

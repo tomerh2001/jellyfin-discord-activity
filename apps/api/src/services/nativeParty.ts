@@ -274,7 +274,11 @@ export class NativePartyService {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000)
       });
     } catch { throw new NativeError("jellyfin_unavailable", 502); }
-    if (!response.ok) { await response.body?.cancel(); throw new NativeError("jellyfin_request_failed", response.status === 401 ? 401 : 502); }
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 403 && path === "/SyncPlay/New") throw new NativeError("syncplay_create_not_allowed", 403);
+      throw new NativeError("jellyfin_request_failed", response.status === 401 ? 401 : 502);
+    }
     if (response.status === 204 || response.headers.get("content-length") === "0") return null;
     try { return await readUpstreamJson(response, 16 * 1024 * 1024); }
     catch { throw new NativeError("jellyfin_invalid_response", 502); }
@@ -329,7 +333,21 @@ export class NativePartyService {
       return this.json(viewer, "POST", "/SyncPlay/Seek", { PositionTicks: Math.round(payload!.seconds! * 10_000_000) });
     }
     if (action === "queue" || action === "select") {
-      const ids = payload?.itemIds ?? [];
+      let ids = payload?.itemIds ?? [];
+      if (action === "select" && ids.length === 1) {
+        await this.requireItem(viewer, ids[0]!);
+        const item = await this.json(viewer, "GET", `/Users/${viewer.connection.jellyfinUserId}/Items/${ids[0]}`) as { Type?: string; SeriesId?: string };
+        // Match native Web's episode playback expansion so Discord-started episodes
+        // retain the same Next/Previous queue controls as a library selection.
+        if (item.Type === "Episode" && /^[a-f0-9-]{32,36}$/i.test(item.SeriesId ?? "")) {
+          const query = new URLSearchParams({ UserId: viewer.connection.jellyfinUserId, IsVirtualUnaired: "false",
+            IsMissing: "false", Limit: "100", StartItemId: ids[0]! });
+          const result = await this.json(viewer, "GET", `/Shows/${item.SeriesId}/Episodes?${query}`) as { Items?: Array<{ Id?: string }> };
+          const episodes = (result.Items ?? []).flatMap((entry) => entry.Id && /^[a-f0-9-]{32,36}$/i.test(entry.Id) ? [entry.Id] : []);
+          const start = episodes.indexOf(ids[0]!);
+          if (start >= 0) ids = episodes.slice(start);
+        }
+      }
       await this.requirePartyItems(viewer, ids);
       await this.authorize(viewer.capability);
       return action === "queue" ? this.json(viewer, "POST", "/SyncPlay/Queue", { ItemIds: ids, Mode: "Queue" })

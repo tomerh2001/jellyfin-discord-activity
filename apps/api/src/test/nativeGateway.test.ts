@@ -33,6 +33,9 @@ let failItemStatus: number;
 let slowTransferClosed: boolean;
 let imageContentType: string;
 let socketAcceptDelay: number;
+let episodeMode: boolean;
+let denyGroupCreation: boolean;
+let largePlaylist: boolean;
 
 function device(authorization: string): string { return /DeviceId="([^"]+)"/.exec(authorization)?.[1] ?? ""; }
 async function eventually(check: () => boolean): Promise<void> {
@@ -41,7 +44,7 @@ async function eventually(check: () => boolean): Promise<void> {
 }
 
 beforeEach(async () => {
-  sessions = []; calls = []; upstreamSockets = new Map(); deniedForUser = new Set(); failItemStatus = 404; slowTransferClosed = false; imageContentType = "image/png"; socketAcceptDelay = 0;
+  sessions = []; calls = []; upstreamSockets = new Map(); deniedForUser = new Set(); failItemStatus = 404; slowTransferClosed = false; imageContentType = "image/png"; socketAcceptDelay = 0; episodeMode = false; denyGroupCreation = false; largePlaylist = false;
   upstream = Fastify({ logger: false });
   await upstream.register(websocketPlugin);
   upstream.addHook("preValidation", async (request) => {
@@ -57,7 +60,7 @@ beforeEach(async () => {
     const url = new URL(request.url, "http://local");
     const authorization = request.headers.authorization ?? "";
     calls.push({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: request.body, authorization });
-    if (url.pathname === "/SyncPlay/New") return { GroupId: GROUP };
+    if (url.pathname === "/SyncPlay/New") return denyGroupCreation ? reply.code(403).send({ secret: TOKEN }) : { GroupId: GROUP };
     if (url.pathname === `/SyncPlay/${GROUP}`) return { GroupId: GROUP, GroupName: "Discord watch party", Participants: ["shared"] };
     if (url.pathname.startsWith("/SyncPlay/")) {
       if (url.pathname.endsWith("/Join")) {
@@ -70,10 +73,14 @@ beforeEach(async () => {
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
       if (item[2] === DENIED || deniedForUser.has(item[1]!)) return reply.code(failItemStatus).send({ error: TOKEN });
-      return { Id: item[2], Name: "Test movie", MediaSources: [{ Id: item[2], Path: "/private/media/movie.mkv" }] };
+      return { Id: item[2], Name: "Test movie", ...(episodeMode ? { Type: "Episode", SeriesId: GROUP } : {}), MediaSources: [{ Id: item[2], Path: "/private/media/movie.mkv" }] };
     }
+    if (url.pathname === `/Shows/${GROUP}/Episodes`) return { Items: [{ Id: ITEM }, { Id: PLAYLIST_ITEM }] };
     if (url.pathname.endsWith("/PlaybackInfo")) return { AccessToken: TOKEN, MediaSources: [{ Id: ITEM, TranscodingUrl: `Videos/${ITEM}/master.m3u8?api_key=${TOKEN}`, Path: "/private/file.mkv" }] };
     if (url.pathname.endsWith("/Images/Primary")) return reply.type(imageContentType).send("<svg><script>bad()</script></svg>");
+    if (largePlaylist && url.pathname.endsWith("main.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(
+      "#EXTM3U\n" + Array.from({ length: 2200 }, (_, i) => `#EXTINF:3,\nhls1/main/${i}.ts?NativeProfile=${"x".repeat(1100)}&api_key=${TOKEN}\n`).join("")
+    );
     if (url.pathname.endsWith("master.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(`#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="hls1/main/key.bin?api_key=${TOKEN}"\nhls1/main/0.ts?api_key=${TOKEN}\n`);
     if (url.pathname.endsWith("/stream.mp4")) {
       if (url.searchParams.get("slow") === "true") {
@@ -208,6 +215,24 @@ describe("native Jellyfin gateway", () => {
     expect(media.body).toBe("data");
     expect(media.headers["content-range"]).toBe("bytes 0-3/4");
     expect(media.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("keeps native trickplay references in a master playlist reachable through the gateway", async () => {
+    const { viewer } = await launch();
+    const output = rewriteNativePlaylist(viewer, '#EXTM3U\n#EXT-X-IMAGE-STREAM-INF:BANDWIDTH=100,URI="Trickplay/320/tiles.m3u8"\nmain.m3u8', `${upstreamAddress}/Videos/${ITEM}/master.m3u8`);
+    expect(output).toContain(`/Videos/${ITEM}/Trickplay/320/tiles.m3u8`);
+    expect(allowNativeRequest(viewer, "GET", `/Videos/${ITEM}/Trickplay/320/0.jpg`)).toContain("Trickplay");
+    expect(() => allowNativeRequest(viewer, "GET", `/Videos/${ITEM}/Trickplay/../private`)).toThrow();
+  });
+
+  it("streams a feature-length native VOD playlist above the old 2MiB limit", async () => {
+    const { data } = await launch();
+    largePlaylist = true;
+    const response = await app.inject({ url: `${data.baseUrl}/Videos/${ITEM}/main.m3u8` });
+    expect(response.statusCode).toBe(200);
+    expect(response.body.length).toBeGreaterThan(2 * 1024 * 1024);
+    expect(response.body).toContain(`${data.baseUrl}/Videos/${ITEM}/hls1/main/2199.ts`);
+    expect(response.body).not.toContain(TOKEN);
   });
 
   it("scopes playback reports and filters session enumeration", async () => {
@@ -429,8 +454,35 @@ describe("native Jellyfin gateway", () => {
 
   it("sanitizes credentials recursively rather than depending on a particular DTO", async () => {
     const { viewer } = await launch();
-    const result = sanitizeNativeJson(viewer, { User: { Token: TOKEN }, Note: `literal ${TOKEN}`, LocalAddress: upstreamAddress, Path: "/secret/file" });
+    const result = sanitizeNativeJson(viewer, { User: { Token: TOKEN }, CustomCss: "@import url(https://external.invalid/style.css)", Note: `literal ${TOKEN}`, LocalAddress: upstreamAddress, Path: "/secret/file" });
     expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(JSON.stringify(result)).not.toContain("external.invalid");
     expect(JSON.stringify(result)).not.toContain("/secret/");
+  });
+});
+
+
+describe("native command episode queues and account permissions", () => {
+  it("expands a Discord episode selection using Jellyfin's ordered episode list", async () => {
+    const { data, viewer } = await launch();
+    const socket = await connect(data);
+    await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
+    episodeMode = true;
+    await service.command(viewer, "select", { itemIds: [ITEM] });
+    expect([...calls].reverse().find((call) => call.path === "/SyncPlay/SetNewQueue")?.body).toEqual({
+      PlayingQueue: [ITEM, PLAYLIST_ITEM], PlayingItemPosition: 0, StartPositionTicks: 0
+    });
+    expect(calls.find((call) => call.path === `/Shows/${GROUP}/Episodes`)?.query.StartItemId).toBe(ITEM);
+    socket.close();
+  });
+
+  it("explains a missing native group permission without disclosing upstream data", async () => {
+    const who = await actor();
+    denyGroupCreation = true;
+    const result = await app.inject({ method: "POST", url: "/api/party", headers: who.headers, payload: { connectionId: "connection" } });
+    expect(result.statusCode).toBe(403);
+    expect(result.json().error.code).toBe("syncplay_create_not_allowed");
+    expect(result.json().error.message).toContain("administrator");
+    expect(result.body).not.toContain(TOKEN);
   });
 });

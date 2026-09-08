@@ -26,5 +26,5 @@ export function NativeClient({ launch, onStatus }: { launch: NativeLaunch; onSta
     return () => window.removeEventListener("message", receive);
   }, [launch]);
   return <iframe ref={frame} className="native-client" title="Jellyfin" src="/jellyfin-web/index.html"
-    allow="autoplay; encrypted-media" sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock" />;
+    allow="autoplay; encrypted-media; fullscreen" allowFullScreen sandbox="allow-scripts allow-same-origin allow-forms allow-pointer-lock" />;
 }

@@ -37,7 +37,7 @@ export function securityPlugin(env: AppEnv): FastifyPluginAsync {
         // Static chunks and media segments have their own ingress/capability checks;
         // they must not consume the JSON/control request budget while watching.
         return request.url.startsWith("/jellyfin-web/")
-          || /^\/jf\/[^/]+\/(?:Videos\/|Audio\/|Items\/[^/]+\/Images(?:\/|\?))/.test(request.url)
+          || /^\/jf\/[^/]+\/(?:Videos\/|Audio\/|Items\/[^/]+\/Images(?:\/|\?))/i.test(request.url)
           || request.url === "/health" || request.url === "/api/health";
       },
       keyGenerator(request) {

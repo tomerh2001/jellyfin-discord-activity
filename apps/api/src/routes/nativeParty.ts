@@ -1,3 +1,4 @@
+import { ConnectionError } from "../services/jellyfinConnections.js";
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { AuthError, requireAppSession, sendAuthError } from "../plugins/auth.js";
@@ -32,7 +33,14 @@ export const nativePartyRoutes: FastifyPluginAsync = async (app) => {
 
 export function nativeRouteError(error: unknown, reply: import("fastify").FastifyReply) {
   if (error instanceof AuthError) return reply.code(error.statusCode).send(sendAuthError(error));
-  if (error instanceof NativeError) return reply.code(error.statusCode).send({ error: { code: error.code, message: "The native Jellyfin request could not be completed." } });
+  if (error instanceof ConnectionError) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.publicMessage } });
+  if (error instanceof NativeError) {
+    const messages: Record<string, string> = {
+      syncplay_create_not_allowed: "This Jellyfin account cannot create watch groups. Ask its server administrator to allow creating and joining SyncPlay groups.",
+      syncplay_join_not_allowed: "This Jellyfin account cannot join watch groups. Ask its server administrator to enable SyncPlay access."
+    };
+    return reply.code(error.statusCode).send({ error: { code: error.code, message: messages[error.code] ?? "The native Jellyfin request could not be completed." } });
+  }
   // Never log an upstream exception whose request options may contain credentials.
   return reply.code(502).send({ error: { code: "native_upstream_failed", message: "Jellyfin is unavailable or this connection is no longer valid." } });
 }
