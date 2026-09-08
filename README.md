@@ -1,4 +1,6 @@
-# Jellyfin Discord Activity
+<img src="apps/activity-web/public/branding/jellyfin-watch-icon.png" alt="Jellyfin Watch" width="96" height="96" />
+
+# Jellyfin Watch
 
 A self-hosted Discord Activity for watching Jellyfin movies and episodes together in a voice channel. Each participant opens the shared player; playback follows the room host.
 

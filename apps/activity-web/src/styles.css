@@ -49,9 +49,31 @@ select option {
 .action-bar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 16px;
   padding: 12px;
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.app-brand img {
+  flex: 0 0 auto;
+  border-radius: 12px;
+}
+
+.app-brand h1 {
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.app-brand p {
+  font-size: 0.85rem;
+  color: #bab5d8;
 }
 
 h1,
