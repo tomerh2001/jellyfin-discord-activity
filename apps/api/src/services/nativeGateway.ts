@@ -5,6 +5,7 @@ import WebSocket, { type RawData } from "ws";
 import { upstreamWebSocketOptions } from "./upstreamPolicy.js";
 import { NativeError, nativeAuthorization, nativeSessionId, type NativePartyService, type NativeViewer } from "./nativeParty.js";
 import { isNativeQueuePath, nativeQueueShape } from "./nativeQueueDiagnostics.js";
+import { sendNativeText } from "./nativeResponse.js";
 
 const ID = "[a-zA-Z0-9_-]{1,128}";
 const SECRET_KEYS = new Set(["apikey", "api_key", "access_token", "accesstoken", "token", "password", "pw", "authorization", "x-emby-token", "x-mediabrowser-token"]);
@@ -211,7 +212,7 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
   await service.authorize(viewer.capability);
   if (/^\/SyncPlay\/Join$/i.test(path)) {
     if (!viewer.sockets) throw new NativeError("native_socket_required", 409);
-    for (const id of service.parties.get(viewer.partyId)?.queueItemIds ?? []) await service.requireItem(viewer, id);
+    await service.requireViewerItems(viewer, service.parties.get(viewer.partyId)?.queueItemIds ?? []);
     await service.authorize(viewer.capability);
     if (!viewer.sockets) throw new NativeError("native_socket_required", 409);
     // Jellyfin 10.11 incorrectly increments its user counter on repeated joins.
@@ -228,7 +229,7 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
   if (/^\/SyncPlay\/(?:List|[a-f0-9-]{32,36})$/i.test(path)) {
     if (!path.toLowerCase().endsWith("/list") && path.split("/").pop() !== party.groupId) throw new NativeError("native_group_denied");
     const data = await service.execute(viewer, "GET", `/SyncPlay/${party.groupId}`);
-    return reply.send(path.toLowerCase().endsWith("/list") ? [sanitizeNativeJson(viewer, data)] : sanitizeNativeJson(viewer, data));
+    return sendNativeText(reply.type("application/json"), path.toLowerCase().endsWith("/list") ? [sanitizeNativeJson(viewer, data)] : sanitizeNativeJson(viewer, data));
   }
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -277,14 +278,14 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
       if (/^\/Sessions$/i.test(path)) value = Array.isArray(value) ? value.filter((s) => record(s).Id === nativeSessionId(viewer)) : [];
       const safe = sanitizeNativeJson(viewer, value);
       dispose();
-      return reply.type("application/json").send(safe);
+      return sendNativeText(reply.type("application/json"), safe);
     }
     if (contentType.toLowerCase().includes("mpegurl") || path.endsWith(".m3u8")) {
       const text = await readBounded(response, MAX_PLAYLIST, controller.signal);
       const upstreamUrl = new URL(viewer.connection.serverUrl.replace(/\/$/, "") + target).href;
       const rewritten = rewriteNativePlaylist(viewer, text, upstreamUrl);
       dispose();
-      return reply.type("application/vnd.apple.mpegurl").send(rewritten);
+      return sendNativeText(reply.type("application/vnd.apple.mpegurl"), rewritten);
     }
     if (/(?:html|xml|svg|javascript|ecmascript)/i.test(contentType)) throw new NativeError("native_content_denied", 502);
     for (const header of ["content-type", "content-length", "content-range", "accept-ranges"]) {

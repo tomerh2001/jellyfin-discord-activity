@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 import type { AppEnv } from "../env.js";
@@ -12,6 +12,46 @@ export type ValidatedUpstream = Readonly<{
   family: 4 | 6;
   operatorApproved: boolean;
 }>;
+
+const MAX_UPSTREAM_POOLS = 32;
+const POOL_IDLE_MS = 30_000;
+const upstreamPools = new Map<string, { agent: HttpAgent; usedAt: number }>();
+
+function hasActiveRequests(agent: HttpAgent): boolean {
+  return [...Object.values(agent.sockets), ...Object.values(agent.requests)].some((entries) => entries && entries.length > 0);
+}
+
+// Pool ownership includes the validated IP, not just the hostname: a later DNS
+// answer can never borrow a socket connected under a different validated pin.
+// The credentials remain request headers and are never stored on the Agent.
+function upstreamAgent(target: ValidatedUpstream, url: URL): HttpAgent | false {
+  const key = JSON.stringify([target.serverUrl, target.hostname, target.address, target.family, target.operatorApproved]);
+  const existing = upstreamPools.get(key);
+  if (existing) { existing.usedAt = Date.now(); return existing.agent; }
+  if (upstreamPools.size >= MAX_UPSTREAM_POOLS) {
+    const idle = [...upstreamPools].filter(([, pool]) => !hasActiveRequests(pool.agent))
+      .sort((left, right) => left[1].usedAt - right[1].usedAt)[0];
+    // Preserve active streams when all pools are busy. This request uses the
+    // original unpooled transport instead of retaining an unbounded new pool.
+    if (!idle) return false;
+    idle[1].agent.destroy();
+    upstreamPools.delete(idle[0]);
+  }
+  const Agent = url.protocol === "https:" ? HttpsAgent : HttpAgent;
+  const agent = new Agent({ keepAlive: true, maxSockets: 64, maxFreeSockets: 8, scheduling: "lifo", timeout: POOL_IDLE_MS });
+  upstreamPools.set(key, { agent, usedAt: Date.now() });
+  return agent;
+}
+
+const pruneUpstreamPools = setInterval(() => {
+  for (const [key, pool] of upstreamPools) {
+    if (Date.now() - pool.usedAt >= POOL_IDLE_MS && !hasActiveRequests(pool.agent)) {
+      pool.agent.destroy();
+      upstreamPools.delete(key);
+    }
+  }
+}, POOL_IDLE_MS);
+pruneUpstreamPools.unref();
 
 export class UpstreamPolicyError extends Error {
   constructor(readonly code: string, readonly publicMessage: string, readonly statusCode = 400) {
@@ -130,7 +170,7 @@ export async function upstreamFetch(target: ValidatedUpstream, path: string | UR
   return new Promise<Response>((resolve, reject) => {
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;
     const req = send(url, { method, headers: Object.fromEntries(headers), ...upstreamWebSocketOptions(target),
-      agent: false, signal: controller.signal }, (response) => {
+      agent: upstreamAgent(target, url), signal: controller.signal }, (response) => {
       clearTimeout(headerDeadline);
       response.on("close", cleanup);
       const status = response.statusCode ?? 502;

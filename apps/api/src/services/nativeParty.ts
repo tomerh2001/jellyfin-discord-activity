@@ -54,6 +54,7 @@ const CLIENT = "Jellyfin Discord Activity";
 // leaves SyncPlay immediately, and membership/session expiry still fail closed.
 const EMPTY_GRACE_MS = 120_000;
 const LAUNCH_GRACE_MS = 120_000;
+const ITEM_CHECK_CONCURRENCY = 8;
 const services = new WeakMap<object, NativePartyService>();
 
 export class NativeError extends Error {
@@ -95,6 +96,7 @@ export function getNativePartyService(app: FastifyInstance): NativePartyService 
 
 /** Native SyncPlay owns all playback state. These maps only bind authorization and lifecycle. */
 export class NativePartyService {
+  private readonly itemChecks = new WeakMap<NativeViewer, Map<string, Promise<{ until: number; sources: Set<string> }>>>();
   readonly parties = new Map<string, NativeParty>();
   readonly viewers = new Map<string, NativeViewer>();
   private readonly bindings = new Map<string, string>();
@@ -465,14 +467,27 @@ export class NativePartyService {
     if (!/^[a-f0-9-]{32,36}$/i.test(itemId)) throw new NativeError("native_item_denied");
     let access = viewer.itemAccess.get(itemId);
     if (!access || access.until < Date.now()) {
-      let item: { Id?: string; MediaSources?: Array<{ Id?: string }> };
-      try {
-        item = await this.json(viewer, "GET", `/Users/${viewer.connection.jellyfinUserId}/Items/${itemId}?Fields=MediaSources`) as typeof item;
-      } catch { throw new NativeError("native_item_denied"); }
-      if (!item?.Id || item.Id.replaceAll("-", "").toLowerCase() !== itemId.replaceAll("-", "").toLowerCase()) throw new NativeError("native_item_denied");
-      access = { until: Date.now() + 30_000, sources: new Set([item.Id, ...(item.MediaSources ?? []).flatMap((source) => source.Id ? [source.Id] : [])]) };
-      if (viewer.itemAccess.size >= 500) viewer.itemAccess.clear();
-      viewer.itemAccess.set(itemId, access);
+      let checks = this.itemChecks.get(viewer);
+      if (!checks) { checks = new Map(); this.itemChecks.set(viewer, checks); }
+      let pending = checks.get(itemId);
+      if (!pending) {
+        const ownChecks = checks;
+        pending = (async () => {
+          try {
+            let item: { Id?: string; MediaSources?: Array<{ Id?: string }> };
+            try {
+              item = await this.json(viewer, "GET", `/Users/${viewer.connection.jellyfinUserId}/Items/${itemId}?Fields=MediaSources`) as typeof item;
+            } catch { throw new NativeError("native_item_denied"); }
+            if (!item?.Id || item.Id.replaceAll("-", "").toLowerCase() !== itemId.replaceAll("-", "").toLowerCase()) throw new NativeError("native_item_denied");
+            const verified = { until: Date.now() + 30_000, sources: new Set([item.Id, ...(item.MediaSources ?? []).flatMap((source) => source.Id ? [source.Id] : [])]) };
+            if (viewer.itemAccess.size >= 500) viewer.itemAccess.clear();
+            viewer.itemAccess.set(itemId, verified);
+            return verified;
+          } finally { ownChecks.delete(itemId); }
+        })();
+        checks.set(itemId, pending);
+      }
+      access = await pending;
     }
     if (mediaSourceId && !access.sources.has(mediaSourceId)) throw new NativeError("native_media_source_denied");
   }
@@ -485,7 +500,27 @@ export class NativePartyService {
     const members = [...party.viewers].map((cap) => this.viewers.get(cap)).filter((v): v is NativeViewer => !!v && this.active(v));
     // Validate before invoking the one native mutation, so a denied member cannot
     // be silently dropped from a party when another participant selects media.
-    for (const id of new Set(itemIds)) await Promise.all(members.map((member) => this.requireItem(member, id)));
+    await this.checkItems(members, itemIds);
+  }
+
+  async requireViewerItems(viewer: NativeViewer, itemIds: string[]): Promise<void> {
+    if (itemIds.length > 500) throw new NativeError("native_queue_too_large", 400);
+    await this.checkItems([viewer], itemIds);
+  }
+
+  private async checkItems(members: NativeViewer[], itemIds: string[]): Promise<void> {
+    const ids = [...new Set(itemIds)];
+    const total = ids.length * members.length;
+    let cursor = 0;
+    let failure: unknown;
+    await Promise.all(Array.from({ length: Math.min(ITEM_CHECK_CONCURRENCY, total) }, async () => {
+      while (!failure && cursor < total) {
+        const index = cursor++;
+        try { await this.requireItem(members[index % members.length]!, ids[Math.floor(index / members.length)]!); }
+        catch (error) { failure ??= error; }
+      }
+    }));
+    if (failure) throw failure;
   }
 
   async command(viewer: NativeViewer, action: "pause" | "play" | "seek" | "next" | "previous" | "stop" | "queue" | "select" | "search" | "now", payload?: { query?: string; seconds?: number; itemIds?: string[] }): Promise<unknown> {

@@ -1,10 +1,18 @@
 import type { FastifyPluginAsync } from "fastify";
+import compress from "@fastify/compress";
 import { bridgeNativeSocket, prepareNativeSocket, proxyNativeRequest, type PreparedNativeSocket } from "../services/nativeGateway.js";
 import { getNativePartyService, NativeError, type NativeViewer } from "../services/nativeParty.js";
 import { nativeRouteError } from "./nativeParty.js";
 import { isNativeQueuePath, nativeQueueShape } from "../services/nativeQueueDiagnostics.js";
 
 export const nativeJellyfinRoutes: FastifyPluginAsync = async (app) => {
+  // Only explicitly selected, already sanitized native text uses reply.compress.
+  // Broker credentials, static assets, media streams and incoming bodies do not.
+  await app.register(compress, {
+    global: false, globalCompression: false, globalDecompression: false,
+    encodings: ["br", "gzip", "identity"], threshold: 1024, syncThreshold: 0,
+    customTypes: /^(?:application\/json|application\/vnd\.apple\.mpegurl)(?:;|$)/i
+  });
   const service = getNativePartyService(app);
   app.addHook("onRequest", async (_request, reply) => {
     // Remote servers supply data and media only, never executable same-origin documents.

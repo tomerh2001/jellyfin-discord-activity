@@ -30,6 +30,7 @@ export function discordProxyPlugin(env: AppEnv): FastifyPluginAsync {
       } else if (verifyProxy(request.headers)) {
         return;
       }
+      request.log.warn({ code: "discord_proxy_required" }, "Activity ingress rejected");
       return reply.code(401).send(apiError("discord_proxy_required", "Open this Activity inside Discord."));
     });
   }, { name: "discord-proxy-authentication" });

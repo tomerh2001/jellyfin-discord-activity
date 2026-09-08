@@ -69,3 +69,19 @@ it("encodes connection paths and honors cancellation before a Quick Connect poll
   await expect(pollQuickConnect("app-token", "poll", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   expect(fetcher).toHaveBeenCalledTimes(1);
 });
+
+it("surfaces ingress/bearer rejection to the native retry UI without renewing Discord or misclassifying Jellyfin login errors", async () => {
+  const listener = vi.fn(); const stop = onSessionRejected(listener);
+  const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+  try {
+    for (const code of ["discord_proxy_required", "missing_app_token"]) {
+      fetcher.mockResolvedValueOnce(Response.json({ error: { code, message: "Connection denied." } }, { status: 401 }));
+      await expect(getParty("current-session")).rejects.toMatchObject({ recoveryRequired: true });
+    }
+    fetcher.mockResolvedValueOnce(Response.json({ error: { code: "jellyfin_login_failed", message: "Check your Jellyfin password." } }, { status: 401 }));
+    const error = await connectAccount("current-session", { serverUrl: connection.serverUrl, username: "Viewer", password: "wrong" }).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toHaveProperty("recoveryRequired");
+    expect(listener).not.toHaveBeenCalled();
+  } finally { stop(); }
+});

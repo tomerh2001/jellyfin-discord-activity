@@ -1,4 +1,5 @@
 /** Loaded once as a classic script by the native Jellyfin document. No UI mount. */
+import { startActivitySession } from "./discord/session.js";
 export { startActivitySession, resumeActivitySession, clearActivitySession, StartupTimeout } from "./discord/session.js";
 export { logout } from "./api/client.js";
 export {
@@ -19,4 +20,13 @@ export type { Connection, Connections, Party, NativeLaunch, QuickConnect } from 
 
 declare global {
   interface Window { JellyfinWatch: typeof import("./library.js"); }
+}
+
+// Begin the existing, deduplicated handshake while the browser downloads and
+// initializes native Jellyfin. No account/party action depends on this preload;
+// the native controller still awaits verified authentication before proceeding.
+// A later native start shares this operation (or retries a failed preload), so
+// no promise rejection escapes before the native error dialog is available.
+if (new URLSearchParams(window.location.search).has("frame_id")) {
+  void startActivitySession().catch(() => {});
 }
