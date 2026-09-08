@@ -194,10 +194,10 @@ describe("native Jellyfin gateway", () => {
     const info = await app.inject({ method: "POST", url: `${data.baseUrl}/Items/${ITEM}/PlaybackInfo`, payload: {} });
     expect(info.statusCode).toBe(200);
     const url = info.json().MediaSources[0].TranscodingUrl as string;
-    expect(url).toBe(`${data.baseUrl}/Videos/${ITEM}/master.m3u8`);
+    expect(url).toBe(`Videos/${ITEM}/master.m3u8`);
     expect(info.body).not.toContain(TOKEN);
     expect(info.body).not.toContain("/private/");
-    const playlist = await app.inject({ url });
+    const playlist = await app.inject({ url: `${data.baseUrl}/${url}` });
     expect(playlist.statusCode).toBe(200);
     expect(playlist.body).toContain(`${data.baseUrl}/Videos/${ITEM}/hls1/main/0.ts`);
     expect(playlist.body).not.toContain(TOKEN);

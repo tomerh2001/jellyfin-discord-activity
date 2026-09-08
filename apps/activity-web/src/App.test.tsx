@@ -1,5 +1,5 @@
 import { StrictMode } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App.js";
 
@@ -29,7 +29,7 @@ function fixtures(options: { otherParty?: boolean; revoke?: () => Promise<Respon
 
 describe("native Activity shell", () => {
   beforeEach(() => { sdk.authorize.mockResolvedValue({ code: "oauth-code" }); sdk.authenticate.mockResolvedValue({ id: "discord-user", username: "Viewer" }); });
-  afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
   it("authorizes once under StrictMode and opens the saved account in the existing native party", async () => {
     const fetcher = fixtures(); vi.stubGlobal("fetch", fetcher);
     render(<StrictMode><App /></StrictMode>);
@@ -49,6 +49,48 @@ describe("native Activity shell", () => {
     expect(screen.getByRole("button", { name: /Movie library.*Viewer.*Another server/ })).toBeDisabled();
     expect(fetcher.mock.calls.some(([url]) => String(url).endsWith("/api/native/launch"))).toBe(false);
     expect(fetcher.mock.calls.some(([url, init]) => String(url).endsWith("/api/party") && init?.method === "POST")).toBe(false);
+  });
+  it("requires explicit confirmation before switching everyone to a saved server with the same server ID at another URL", async () => {
+    const alternate = { ...account, id: "other-connection", serverUrl: "https://another.test", serverName: "Another library" };
+    const fallback = fixtures();
+    let current = party;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/connections")) return json({ connections: [account, alternate], preferredConnectionId: account.id, defaultServerUrl: account.serverUrl, communityAvailable: false });
+      if (String(input).endsWith("/api/party")) {
+        if (init?.method === "POST") current = { ...party, id: "replacement", groupId: "replacement-group", serverUrl: alternate.serverUrl };
+        return json({ party: current });
+      }
+      return fallback(input, init);
+    });
+    vi.stubGlobal("fetch", fetcher); render(<App />); await screen.findByTitle("Jellyfin");
+    fireEvent.click(screen.getByRole("button", { name: "Accounts" }));
+    expect(screen.getByRole("button", { name: /Another library.*Viewer.*Another server/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Change server" }));
+    expect(screen.getByRole("textbox", { name: "Server URL" })).not.toHaveAttribute("readonly");
+    fireEvent.click(screen.getByRole("button", { name: /Another library.*Viewer/ }));
+    await screen.findByRole("dialog", { name: "Change server for everyone?" });
+    const changes = () => fetcher.mock.calls.filter(([url, init]) => String(url).endsWith("/api/party") && init?.method === "POST");
+    expect(changes()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm change server" }));
+    await waitFor(() => expect(changes()).toHaveLength(1));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByText("Another library · Viewer")).toBeInTheDocument();
+  });
+  it("removes an obsolete native player when another viewer changes the party binding", async () => {
+    const fallback = fixtures(); let current = party;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith("/api/party") ? Promise.resolve(json({ party: current })) : fallback(input, init)));
+    let poll: (() => Promise<void>) | undefined;
+    const interval = globalThis.setInterval;
+    vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => Promise<void>, delay: number) => {
+      if (delay === 5000) poll = callback;
+      return interval(callback, delay);
+    }) as typeof setInterval);
+    render(<App />); await screen.findByTitle("Jellyfin");
+    current = { ...party, id: "new-party", groupId: "new-group", serverUrl: "https://changed.test" };
+    await act(async () => { await poll?.(); });
+    await screen.findByText("The party’s server changed. Choose your account to join the new watch party.");
+    expect(screen.queryByTitle("Jellyfin")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Server URL" })).toHaveValue("https://changed.test");
   });
   it("waits for revocation, prevents duplicate leave requests and removes the native player", async () => {
     let resolve!: (value: Response) => void;

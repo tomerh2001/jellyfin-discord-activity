@@ -134,6 +134,15 @@ export function rewriteNativePlaylist(viewer: NativeViewer, playlist: string, up
   }).join("\n");
 }
 
+function rewriteApiReference(viewer: NativeViewer, reference: string): string {
+  const base = viewer.connection.serverUrl.replace(/\/$/, "") + "/";
+  // Jellyfin's API client concatenates its base with DTO URLs. A leading slash
+  // in a native DTO is API-relative, whereas an HLS URI follows URL resolution.
+  const resolved = /^[a-z][a-z0-9+.-]*:/i.test(reference) || reference.startsWith("//")
+    ? reference : new URL(reference.replace(/^\//, ""), base).href;
+  return rewriteNativeUrl(viewer, resolved);
+}
+
 export function sanitizeNativeJson(viewer: NativeViewer, value: unknown, key = ""): unknown {
   if (Array.isArray(value)) return value.map((part) => sanitizeNativeJson(viewer, part));
   if (value && typeof value === "object") {
@@ -150,7 +159,8 @@ export function sanitizeNativeJson(viewer: NativeViewer, value: unknown, key = "
   }
   if (typeof value !== "string") return value;
   const text = value.replaceAll(viewer.connection.accessToken, viewer.capability);
-  if (["TranscodingUrl", "DirectStreamUrl", "DeliveryUrl"].includes(key) && text) return rewriteNativeUrl(viewer, text);
+  if (["TranscodingUrl", "DirectStreamUrl", "DeliveryUrl"].includes(key) && text) return rewriteApiReference(viewer, text).slice(`/jf/${viewer.capability}/`.length);
+  if (key === "StreamUrl" && text) return rewriteApiReference(viewer, text);
   if (["ServerAddress", "LocalAddress", "WanAddress"].includes(key)) return `/jf/${viewer.capability}`;
   if (key === "Path") return ""; // Physical media paths are not browser credentials or useful UI data.
   if (text.startsWith(viewer.connection.serverUrl)) {
