@@ -1,13 +1,21 @@
 # Native Jellyfin client
 
-`node native-client/build.mjs` builds the actual Jellyfin Web 10.11.11 client.
-Use Node22 with its npm10 and `tar`; no global npm installation is required.
+`node native-client/build.mjs` builds the actual Jellyfin Web 12.0.0 client.
+Use Node24 with npm11 or newer and `tar`; no global npm installation is required.
 The source commit, archive SHA256 and license are pinned in `upstream.json`.
 The upstream npm lockfile supplies dependency integrity. Output goes to `dist/`
 and the Activity API serves its `index.html` at the mapped origin's root.
 The native HashRouter owns navigation within the Activity document.
 
 The build applies a small integration patch before compiling the upstream source:
+
+- Jellyfin 12's upstream **Modern** application supplies the responsive desktop
+  and mobile interface. The app selects its native desktop/mobile mode before
+  the router initializes, so a stored display preference cannot select the old
+  application. The old layout selector is removed from Modern preferences.
+  Modern's own video page combines its MUI toolbar with Jellyfin's shared video
+  controller; seek previews, fullscreen and SyncPlay extend that same player.
+  There is no iframe or separate playback interface.
 
 - The native document loads the [session library](../apps/activity-web/README.md)
   once, before the adapter initializes. That library supplies Discord SDK
@@ -19,14 +27,19 @@ The build applies a small integration patch before compiling the upstream source
 - Both legacy settings and the React configuration provider use the configuration
   packaged in the same build. They do not fetch `config.json` again at startup.
   Configuration changes therefore require a new native build and release.
-- The existing header SyncPlay button, also available in the native video OSD,
-  opens **Watch party**. Its native action sheet offers invitations, accounts,
+- The Modern toolbar's MUI SyncPlay button, also used by its video OSD,
+  opens **Watch party** only when clicked. Its native controls offer invitations, accounts,
   shared server changes, SyncPlay settings, local playback resume/halt when
   available, and leaving. Fullscreen stays with Jellyfin's player controls.
-- Account selection uses upstream `dialogHelper`, native form classes and
-  `emby-button`/`emby-input` controls. It supports saved accounts, server URL and
+- Account selection uses Jellyfin Modern's MUI dialog and form components.
+  It supports saved accounts, server URL and
   password login, Quick Connect, explicit community-account selection, and saved
-  account removal. Native login and server-selection routes open this chooser.
+  account removal. One persistent React dialog root uses Jellyfin’s upstream
+  theme and storage manager in the same document. It mounts before RootApp:
+  bootstrap waits for account selection, so mounting dialogs inside the router
+  would deadlock first-time sign-in. Account subtree remounts do not remove it.
+  Modern login and server-selection routes open this chooser,
+  and the native user menu exposes **Jellyfin accounts**.
   Quick Connect polls sequentially and aborts on cancellation; late results
   cannot select an account after the dialog closes. Failed requests leave an
   actionable native error state with loading cleared.
@@ -38,6 +51,15 @@ The build applies a small integration patch before compiling the upstream source
   on HTTPS. The optional CacheStorage response cache is disabled before its
   constructor runs. Browser preferences last for the current Activity document;
   saved server accounts remain on the broker.
+  Jellyfin 12's IndexedDB query persistence is also removed: the native root uses
+  an in-memory QueryClientProvider, and its query module has no IndexedDB
+  persister. Account replacement clears that document's query cache.
+- Jellyfin 12's SDK subscriptions own one WebSocket per native ApiClient. The
+  adapter bridges its status to the legacy player lifecycle methods used by
+  SyncPlay and the Activity, without opening a second connection. Identical
+  authentication metadata does not reconnect an unchanged capability. SDK and
+  legacy subscribers share account ownership checks; unsubscribe, client close
+  and replacement suppress late callbacks, and close disables SDK reconnection.
 - Native SyncPlay joins the Activity's mapped group after the WebSocket opens.
   Reconnection joins that same group. A socket outage lasting 40 seconds asks the
   document's controller for a fresh gateway launch, since disconnected
@@ -51,7 +73,9 @@ The build applies a small integration patch before compiling the upstream source
 - Shared playback uses native skip prompts, even if the account previously
   selected automatic skipping. That prevents a personal preference from seeking
   everyone else's playback. Remote player plugins and the group picker are not
-  part of the Activity UI.
+  part of the Activity UI. The shared Modern SyncPlay button does not load or
+  expose arbitrary server groups; the verified Discord party owns membership.
+  Modern toolbar and video controls omit the unsupported remote-player button.
 - A blocked media element opens a native **Join playback** dialog containing
   **Tap to play on this device**. The click calls that exact element's `play()` before any asynchronous
   work; a temporary silent audio probe cannot grant a different video element
@@ -60,7 +84,10 @@ The build applies a small integration patch before compiling the upstream source
   available on failure and disappears when playback succeeds. Native
   `playbackstart` fires during preparation and cannot prove autoplay succeeded.
   The native video player's separate `unpause()` path also reports a rejected
-  play attempt to the same recovery control.
+  play attempt to the same recovery control. Stop and account replacement
+  explicitly reset that prompt and invalidate pending play attempts. Native
+  destruction can detach the video before its queued `emptied` event reaches
+  the document, so listening for `emptied` alone is insufficient.
 - Native view navigation bubbles a custom `pagehide` from a DIV. It must not
   dispose document-wide adapter listeners. `onDocumentExit` accepts only a real
   window `PageTransitionEvent` with `persisted: false`; it does not use `once`,
@@ -95,7 +122,7 @@ The build applies a small integration patch before compiling the upstream source
   the same user, connection, server and guild/channel, with no connected viewers.
   Old capabilities are revoked. Explicit Leave or account removal invalidates
   restoration. The Activity cannot suppress Discord's own refresh prompt.
-- [HLS.js](https://github.com/video-dev/hls.js) 1.6.13 uses its lockfile-pinned
+- [HLS.js](https://github.com/video-dev/hls.js) 1.6.16 uses its lockfile-pinned
   standalone worker asset. Rebundling the default
   stringified worker factory can leave a webpack module reference outside its
   scope (`ReferenceError: e is not defined`) and silently fall back to main-thread

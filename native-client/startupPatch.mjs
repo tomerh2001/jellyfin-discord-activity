@@ -60,4 +60,85 @@ async function getConfig() {
         `function getConfig() {
     return Promise.resolve(DefaultConfig);
 }`);
+    // The Activity always uses Jellyfin 12's responsive Modern app. A saved
+    // native display preference must not select another application at startup.
+    await replace('src/components/layoutManager.js',
+        "import { LayoutMode, LegacyLayoutModes } from 'constants/layoutMode';",
+        "import { LayoutMode } from 'constants/layoutMode';");
+    await replace('src/components/layoutManager.js',
+        "    setLayout(layout = '', save = true) {",
+        `    setLayout(layout = '', save = true) {
+        layout = browser.mobile ? LayoutMode.Mobile : LayoutMode.Desktop;`);
+    await replace('src/components/layoutManager.js',
+        '        const isLegacyLayout = LegacyLayoutModes.has(layoutValue);\n', '');
+    await replace('src/components/layoutManager.js',
+        '        this.modern = !isLegacyLayout;',
+        '        this.modern = true;');
+    await replace('src/apps/modern/features/preferences/components/DisplayPreferences.tsx',
+        "import { LayoutMode } from 'constants/layoutMode';\n", '');
+    await replace('src/apps/modern/features/preferences/components/DisplayPreferences.tsx',
+        `            { appHost.supports(AppFeature.DisplayMode) && (
+                <FormControl fullWidth>
+                    <InputLabel id='display-settings-layout-label'>{globalize.translate('LabelDisplayMode')}</InputLabel>
+                    <Select
+                        aria-describedby='display-settings-layout-description'
+                        inputProps={{
+                            name: 'layout'
+                        }}
+                        labelId='display-settings-layout-label'
+                        onChange={onChange}
+                        value={values.layout}
+                    >
+                        <MenuItem value={LayoutMode.Auto}>{globalize.translate('Auto')}</MenuItem>
+                        <MenuItem value={LayoutMode.DesktopLegacy}>{globalize.translate('Desktop')}</MenuItem>
+                        <MenuItem value={LayoutMode.MobileLegacy}>{globalize.translate('Mobile')}</MenuItem>
+                        <MenuItem value={LayoutMode.Tv}>{globalize.translate('TV')}</MenuItem>
+                    </Select>
+                    <FormHelperText component={Stack} id='display-settings-layout-description'>
+                        <span>{globalize.translate('DisplayModeHelp')}</span>
+                        <span>{globalize.translate('LabelPleaseRestart')}</span>
+                    </FormHelperText>
+                </FormControl>
+            ) }
+
+`, '');
+
+    // A gateway capability and account-scoped DTO cache must never be restored
+    // from IndexedDB into another Discord Activity document or account.
+    await replace('src/RootApp.tsx',
+        "import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';",
+        "import { QueryClientProvider } from '@tanstack/react-query';");
+    await replace('src/RootApp.tsx',
+        "import { persister, queryClient } from 'utils/query/queryClient';",
+        "import { queryClient } from 'utils/query/queryClient';");
+    await replace('src/RootApp.tsx',
+        `    <PersistQueryClientProvider
+        client={queryClient}
+        persistOptions={{
+            buster: __JF_BUILD_VERSION__,
+            persister
+        }}
+    >`,
+        '    <QueryClientProvider client={queryClient}>');
+    await replace('src/RootApp.tsx', '    </PersistQueryClientProvider>', '    </QueryClientProvider>');
+    await replace('src/utils/query/queryClient.ts',
+        "import type { PersistedClient, Persister } from '@tanstack/react-query-persist-client';\n", '');
+    await replace('src/utils/query/queryClient.ts', "import { get, set, del } from 'idb-keyval';\n", '');
+    await replace('src/utils/query/queryClient.ts',
+        `/** Create an IndexedDB persister for react-query-persist-client. Uses idb-keyval for simplicity. */
+const createIDBPersister = (idbValidKey: IDBValidKey = 'query-cache') => ({
+    persistClient: async (client: PersistedClient) => {
+        await set(idbValidKey, client);
+    },
+    restoreClient: () => {
+        return get<PersistedClient>(idbValidKey);
+    },
+    removeClient: async () => {
+        await del(idbValidKey);
+    }
+} satisfies Persister);
+
+export const persister = createIDBPersister('jellyfin-query-cache');`,
+        '// Activity query data stays in this document and is cleared on account replacement.');
+
 }

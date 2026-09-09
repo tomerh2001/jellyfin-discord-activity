@@ -1,4 +1,5 @@
 import { ApiClient } from 'jellyfin-apiclient';
+import { flushSync } from 'react-dom';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { appHost } from 'components/apphost';
 import { playbackManager } from 'components/playback/playbackmanager';
@@ -17,6 +18,7 @@ import { applyPresentation, observeVideoPresentation } from './presentation';
 import { onDocumentExit } from './lifecycle';
 import { observeNavigation, restoredNavigation } from './navigation';
 import { createActivityController, preferredAccount } from './controller';
+import { beginAccountViewChange, finishAccountViewChange } from './accountViewState';
 import { chooseAccount, confirmServerChange, showWatchMenu, showLoading, showStartupError, showClosed, mountPlaybackPermission } from './ui';
 import './style.css';
 
@@ -33,6 +35,7 @@ let accountDialog;
 let stopClient = () => {};
 let clearPresence = () => {};
 let videoPresentation;
+let resetPlaybackPermission = () => {};
 let navigation;
 let status = 'Choose something to watch';
 const deviceId = crypto.randomUUID();
@@ -42,6 +45,7 @@ function reportError(message) { toast({ text: message }); }
 
 async function stopNative() {
     switching = true;
+    resetPlaybackPermission();
     clearTimeout(reconnectTimer);
     joining = undefined;
     stopClient();
@@ -71,6 +75,9 @@ async function installLaunch(next, connection, isCurrent) {
     navigation = undefined;
     await stopNative();
     if (!isCurrent()) return;
+    // Modern Home retains imperative controllers inside React state. Suspend
+    // account providers before clearing queries and remount them for the new client.
+    flushSync(beginAccountViewChange);
     // Both native query and cached view state belong to the selected account.
     queryClient.clear();
     if (ready) viewContainer.reset();
@@ -82,13 +89,13 @@ async function installLaunch(next, connection, isCurrent) {
         Id: next.serverId, UserId: next.userId, AccessToken: next.accessToken,
         ManualAddress: address, manualAddressOnly: true, LastConnectionMode: 2
     };
-    apiClient = new ApiClient(address, 'Jellyfin Watch', '10.11.11', 'Discord Activity', deviceId);
+    apiClient = new ApiClient(address, 'Jellyfin Watch', '12.0.0', 'Discord Activity', deviceId);
     apiClient.enableAutomaticNetworking = false;
     apiClient.manualAddressOnly = true;
     apiClient.serverInfo(server);
     apiClient.setAuthenticationInfo(next.accessToken, next.userId);
-    ServerConnections.setLocalApiClient(apiClient);
     ServerConnections.addApiClient(apiClient);
+    ServerConnections.setLocalApiClient(apiClient);
     const result = await ServerConnections.connectToServer(server, {
         enableAutoLogin: true, enableWebSocket: false, reportCapabilities: false,
         enableAutomaticBitrateDetection: false
@@ -97,6 +104,7 @@ async function installLaunch(next, connection, isCurrent) {
     if (result.State !== 'SignedIn') throw new Error('Could not connect to your Jellyfin account. Try choosing it again.');
     ServerConnections.firstConnection = true;
     switching = false;
+    flushSync(finishAccountViewChange);
     if (ready) {
         // A hash navigation uses the current native document and Discord socket.
         await appRouter.show(route);
@@ -239,9 +247,10 @@ export async function finishDiscordBootstrap() {
         status = 'Watching together';
     });
     videoPresentation = observeVideoPresentation(document, value => value instanceof HTMLVideoElement, () => {});
-    const stopped = () => { videoPresentation.stop(); status = 'Choose something to watch'; };
+    const stopped = () => { resetPlaybackPermission(); videoPresentation.stop(); status = 'Choose something to watch'; };
     Events.on(playbackManager, 'playbackstop', stopped);
     const stopPermission = installPlaybackPermission(window, () => SyncPlay.Manager.getLastPlaybackCommand(), mountPlaybackPermission);
+    resetPlaybackPermission = stopPermission.reset;
     onDocumentExit(window, () => { stopObserving(); videoPresentation.dispose(); stopPermission(); Events.off(playbackManager, 'playbackstop', stopped); });
     watchClient();
     let polling = false;

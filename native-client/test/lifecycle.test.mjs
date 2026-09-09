@@ -20,7 +20,11 @@ test('SPA viewhide/pagehide preserves playback listeners and bfcache; real docum
         let cleanups = 0;
         const mediaCleanup = observeMediaPlaying(document, value => value instanceof window.HTMLMediaElement, () => playing++);
         const presentation = observeVideoPresentation(document, value => value instanceof window.HTMLVideoElement, state => states.push(state));
-        const permissionCleanup = installPlaybackPermission(window, () => ({ Command: 'Unpause' }));
+        let permission;
+        const permissionCleanup = installPlaybackPermission(window, () => ({ Command: 'Unpause' }), options => {
+            permission = { ...options };
+            return { update: patch => Object.assign(permission, patch), close: () => { permission = undefined; } };
+        });
         for (const cleanup of [mediaCleanup, presentation.dispose, permissionCleanup]) {
             onDocumentExit(window, () => { cleanups++; cleanup(); });
         }
@@ -35,11 +39,11 @@ test('SPA viewhide/pagehide preserves playback listeners and bfcache; real docum
         window.dispatchEvent(new window.PageTransitionEvent('pagehide', { persisted: true }));
         assert.equal(cleanups, 0);
         video.dispatchEvent(new window.Event(PLAYBACK_BLOCKED_EVENT, { bubbles: true }));
-        assert.equal(document.querySelector('.discordPlaybackPermission')?.textContent, 'Tap to play on this device');
+        assert.equal(permission?.label, 'Tap to play on this device');
         video.dispatchEvent(new window.Event('playing'));
         assert.equal(playing, 1);
         assert.deepEqual(states, [true]);
-        assert.equal(document.querySelector('.discordPlaybackPermission'), null);
+        assert.equal(permission, undefined);
 
         window.dispatchEvent(new window.PageTransitionEvent('pagehide', { persisted: false }));
         assert.equal(cleanups, 3);
@@ -48,6 +52,6 @@ test('SPA viewhide/pagehide preserves playback listeners and bfcache; real docum
         video.dispatchEvent(new window.Event('playing'));
         assert.equal(cleanups, 3);
         assert.equal(playing, 1);
-        assert.equal(document.querySelector('.discordPlaybackPermission'), null);
+        assert.equal(permission, undefined);
     } finally { window.close(); }
 });

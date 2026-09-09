@@ -56,7 +56,16 @@ beforeEach(async () => {
   itemDelay = 0; activeItemChecks = 0; maxItemChecks = 0;
   upstream = Fastify({ logger: false });
   await upstream.register(websocketPlugin);
-  upstream.addHook("preValidation", async (request) => {
+  upstream.addHook("preValidation", async (request, reply) => {
+    // HTTP and WebSocket requests must work with Jellyfin 12 legacy auth off.
+    const authorization = request.headers.authorization ?? "";
+    if (!authorization.startsWith("MediaBrowser ") || !authorization.includes(`Token="${TOKEN}"`)
+      || !device(authorization)) return reply.code(401).send({ error: "modern_authorization_required" });
+    const query = new URL(request.url, "http://fixture").searchParams;
+    if ([...query.keys()].some((key) => ["apikey", "api_key"].includes(key.toLowerCase()))
+      || request.headers["x-emby-authorization"] || request.headers["x-emby-token"]) {
+      return reply.code(400).send({ error: "unexpected_query_or_legacy_credentials" });
+    }
     if (request.url === "/socket" && socketAcceptDelay) await new Promise((resolve) => setTimeout(resolve, socketAcceptDelay));
   });
   upstream.get("/socket", { websocket: true }, (socket, request) => {
@@ -82,6 +91,7 @@ beforeEach(async () => {
     const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
     if (url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
     if (url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
+    if (url.pathname === "/Movies/Recommendations") return [{ RecommendationType: "BecauseYouWatched", BaselineItemName: "Test movie", Items: [{ ...homeItem, Type: "Movie", Path: "/private/media/movie.mkv", AccessToken: TOKEN }] }];
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
       activeItemChecks++;
@@ -92,7 +102,7 @@ beforeEach(async () => {
       return { Id: item[2], Name: "Test movie", ...(episodeMode ? { Type: "Episode", SeriesId: GROUP } : {}), MediaSources: [{ Id: item[2], Path: "/private/media/movie.mkv" }] };
     }
     if (url.pathname === `/Shows/${GROUP}/Episodes`) return { Items: [{ Id: ITEM }, { Id: PLAYLIST_ITEM }] };
-    if (url.pathname.endsWith("/PlaybackInfo")) return { AccessToken: TOKEN, MediaSources: [{ Id: ITEM, TranscodingUrl: `Videos/${ITEM}/master.m3u8?api_key=${TOKEN}`, Path: "/private/file.mkv" }] };
+    if (url.pathname.endsWith("/PlaybackInfo")) return { AccessToken: TOKEN, MediaSources: [{ Id: ITEM, TranscodingUrl: `Videos/${ITEM}/master.m3u8?ApiKey=${TOKEN}`, Path: "/private/file.mkv" }] };
     if (url.pathname.endsWith("/Images/Primary")) return reply.type(imageContentType).send("<svg><script>bad()</script></svg>");
     if (/\/Trickplay\/16\/\d+\.jpg$/.test(url.pathname)) {
       if (!url.pathname.endsWith("/0.jpg")) return reply.code(404).send({ privateDetail: TOKEN });
@@ -102,7 +112,7 @@ beforeEach(async () => {
     if (largePlaylist && url.pathname.endsWith("main.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(
       "#EXTM3U\n" + Array.from({ length: 2200 }, (_, i) => `#EXTINF:3,\nhls1/main/${i}.ts?NativeProfile=${"x".repeat(1100)}&api_key=${TOKEN}\n`).join("")
     );
-    if (url.pathname.endsWith("master.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(`#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="hls1/main/key.bin?api_key=${TOKEN}"\nhls1/main/0.ts?api_key=${TOKEN}\n`);
+    if (url.pathname.endsWith("master.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(`#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="hls1/main/key.bin?ApiKey=${TOKEN}"\nhls1/main/0.ts?ApiKey=${TOKEN}\n`);
     if (url.pathname.endsWith("/stream.mp4")) {
       if (url.searchParams.get("slow") === "true") {
         reply.hijack(); reply.raw.writeHead(200, { "Content-Type": "video/mp4" }); reply.raw.write("first");
@@ -161,7 +171,7 @@ async function launch(who?: Awaited<ReturnType<typeof actor>>) {
 }
 
 async function connect(data: Awaited<ReturnType<typeof launch>>["data"]) {
-  const socket = new WebSocket(`${appAddress.replace("http:", "ws:")}${data.baseUrl}/socket?api_key=ignored-native-token`);
+  const socket = new WebSocket(`${appAddress.replace("http:", "ws:")}${data.baseUrl}/socket?ApiKey=ignored-native-token&api_key=ignored-legacy-token`);
   await once(socket, "open");
   return socket;
 }
@@ -404,7 +414,21 @@ describe("native Jellyfin gateway", () => {
     expect(calls).toHaveLength(before);
   });
 
-  it.each(["/System/Configuration", "/Users/Public", "/Users/another", "/Users/Me/Policy", "/Items/../System/Configuration", "/Items/%252e%252e/System", "/Items/%2fSystem", "/Packages", "/Sessions/other/Playing", "/Videos/ActiveEncodings/other"])("denies unscoped route %s", async (path) => {
+  it("serves Modern movie suggestions for the selected user without exposing nested credentials or media paths", async () => {
+    const { data } = await launch();
+    const response = await app.inject({ url: `${data.baseUrl}/Movies/Recommendations?userId=another&ParentId=${ITEM}&CategoryLimit=3&ItemLimit=8&ApiKey=browser-token` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([{ RecommendationType: "BecauseYouWatched", BaselineItemName: "Test movie", Items: [{ Id: ITEM, Type: "Movie", Path: "", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } }] }]);
+    expect(calls.at(-1)).toMatchObject({ method: "GET", path: "/Movies/Recommendations", query: { UserId: USER, ParentId: ITEM, CategoryLimit: "3", ItemLimit: "8" } });
+    expect(calls.at(-1)?.query).not.toHaveProperty("userId");
+    expect(calls.at(-1)?.query).not.toHaveProperty("ApiKey");
+    const before = calls.length;
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/Movies/Recommendations`, payload: {} })).statusCode).toBe(403);
+    expect((await app.inject({ url: `${data.baseUrl}/Movies/Recommendations/private` })).statusCode).toBe(403);
+    expect(calls).toHaveLength(before);
+  });
+
+  it.each(["/System/Configuration", "/Users/Public", "/Users/another", "/Users/Me/Policy", "/Items/../System/Configuration", "/Items/%252e%252e/System", "/Items/%2fSystem", "/Packages", "/Sessions/other/Playing", "/Videos/ActiveEncodings/other", `/Items/${ITEM}/CriticReviews`])("denies unscoped or removed route %s", async (path) => {
     const { viewer } = await launch();
     expect(() => allowNativeRequest(viewer, "GET", path)).toThrow();
   });
@@ -441,7 +465,10 @@ describe("native Jellyfin gateway", () => {
     expect(playlist.statusCode).toBe(200);
     expect(playlist.body).toContain(`${data.baseUrl}/Videos/${ITEM}/hls1/main/0.ts`);
     expect(playlist.body).not.toContain(TOKEN);
-    expect(playlist.body).not.toContain("api_key");
+    expect(playlist.body).not.toMatch(/api_key|apikey/i);
+    const segment = await app.inject({ url: `${data.baseUrl}/Videos/${ITEM}/hls1/main/0.ts?ApiKey=browser-capability` });
+    expect(segment.statusCode).toBe(200);
+    expect(segment.body).toBe("segment");
     expect(() => rewriteNativePlaylist(viewer, "#EXTM3U\nhttps://evil.example/steal", `${upstreamAddress}/Videos/${ITEM}/master.m3u8`)).toThrow();
     const media = await app.inject({ url: `${data.baseUrl}/Videos/${ITEM}/stream.mp4`, headers: { range: "bytes=0-3" } });
     expect(media.statusCode).toBe(206);

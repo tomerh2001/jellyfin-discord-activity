@@ -58,6 +58,8 @@ describe("saved Jellyfin connections", () => {
     expect(connection).toMatchObject({ serverUrl: f.url, serverId: "server-one", jellyfinUsername: "demo", kind: "personal" });
     const login = f.requests.find((request) => request.path === "/Users/AuthenticateByName")!;
     expect(login.body).toEqual({ Username: "demo", Pw: "  fixture password  " });
+    expect(login.headers.authorization).toMatch(/^MediaBrowser .*DeviceId="jellyfin-watch-login-[^"]+"/);
+    expect(login.headers["x-emby-authorization"]).toBeUndefined();
     expect(result.body).not.toMatch(/fixture-access-token|encryptedAccessToken|loginDeviceId|fixture password/);
     const filename = path.join(f.dataDir, "jellyfin-connections.sqlite");
     const stored = await readFile(filename);
@@ -201,6 +203,16 @@ describe("Jellyfin Quick Connect", () => {
     expect(new JellyfinConnectionStore(f.env).preferred("alice", "guild-one")).toBe(completed.connection.id);
     expect(f.requests.find((request) => request.path === "/Users/AuthenticateWithQuickConnect")?.body)
       .toEqual({ Secret: "fixture-quick-connect-secret" });
+    const quickRequests = f.requests.filter((request) => request.path.startsWith("/QuickConnect/")
+      || request.path === "/Users/AuthenticateWithQuickConnect");
+    expect(quickRequests.map((request) => [request.method, request.path])).toEqual([
+      ["POST", "/QuickConnect/Initiate"], ["GET", "/QuickConnect/Connect"],
+      ["GET", "/QuickConnect/Connect"], ["POST", "/Users/AuthenticateWithQuickConnect"]
+    ]);
+    const authorization = quickRequests[0]!.headers.authorization;
+    expect(authorization).toMatch(/^MediaBrowser .*DeviceId="jellyfin-watch-login-[^"]+"/);
+    expect(quickRequests.every((request) => request.headers.authorization === authorization
+      && request.headers["x-emby-authorization"] === undefined)).toBe(true);
   });
 
   it("invalidates superseded and revoked requests without disclosing their state", async () => {
@@ -236,8 +248,8 @@ async function actor(env: AppEnv, userId = "alice", guildId?: string) {
 }
 
 async function fixture(overrides: NodeJS.ProcessEnv = {}) {
-  const requests: { path: string; headers: IncomingHttpHeaders; body: unknown }[] = [];
-  const state = { publicInfo: { Id: "server-one", ServerName: "Fixture Library", Version: "10.11.0" } as unknown,
+  const requests: { method: string; path: string; headers: IncomingHttpHeaders; body: unknown }[] = [];
+  const state = { publicInfo: { Id: "server-one", ServerName: "Fixture Library", Version: "12.0.0" } as unknown,
     authStatus: 200, authCount: 0, logoutCount: 0, pollCount: 0, quickAuthorized: false, quickAuthCount: 0,
     beforeAuthResponse: undefined as (() => void) | undefined };
   const server = createServer(async (request, response) => {
@@ -246,10 +258,17 @@ async function fixture(overrides: NodeJS.ProcessEnv = {}) {
     const text = Buffer.concat(chunks).toString();
     const body: unknown = text ? JSON.parse(text) : null;
     const url = new URL(request.url!, "http://fixture");
-    requests.push({ path: url.pathname, headers: request.headers, body });
+    requests.push({ method: request.method!, path: url.pathname, headers: request.headers, body });
     response.setHeader("Content-Type", "application/json");
     const send = (value: unknown, status = 200) => { response.statusCode = status; response.end(JSON.stringify(value)); };
     if (url.pathname === "/System/Info/Public") return send(state.publicInfo);
+    // Jellyfin 12 ignores X-Emby-Authorization when legacy auth is disabled.
+    // Login and Quick Connect still need the modern header's device metadata.
+    const authorization = request.headers.authorization ?? "";
+    if (!/^MediaBrowser /.test(authorization) || !/DeviceId="[^"]+"/.test(authorization)) {
+      return send({ error: "modern_authorization_required" }, 401);
+    }
+    if (url.pathname === "/QuickConnect/Initiate" && request.method !== "POST") return send({}, 405);
     if (url.pathname === "/Users/AuthenticateByName" || url.pathname === "/Users/AuthenticateWithQuickConnect") {
       state.authCount++;
       if (url.pathname.endsWith("AuthenticateWithQuickConnect")) state.quickAuthCount++;

@@ -217,7 +217,7 @@ test('pinned source uses the helper, prepares and clears it with playback, and p
     const upstream = JSON.parse(await readFile(new URL('../upstream.json', import.meta.url), 'utf8'));
     const archive = new URL(`../.build/${upstream.commit}.tar.gz`, import.meta.url);
     assert.equal(createHash('sha256').update(await readFile(archive)).digest('hex'), upstream.archiveSha256);
-    const original = execFileSync('tar', ['-xOf', archive.pathname, `jellyfin-web-${upstream.commit}/src/controllers/playback/video/index.js`], { encoding: 'utf8' });
+    const original = execFileSync('tar', ['-xOf', archive.pathname, `jellyfin-web-${upstream.commit}/src/apps/legacy/controllers/playback/video/index.js`], { encoding: 'utf8' });
     const patched = patchNativeSeekPreview(original);
     assert.ok(patched.includes('seekPreview.update(bubble'));
     assert.ok(patched.includes('seekPreview.prepare('));

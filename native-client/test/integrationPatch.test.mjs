@@ -6,6 +6,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { patchNativeIntegration } from '../integrationPatch.mjs';
+import { installNativeSocket } from '../src/nativeSocket.js';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
@@ -23,40 +24,73 @@ async function patchedUpstream() {
     return files;
 }
 
-test('verified upstream native controls keep their UI and call the in-document broker without navigating or logging out', async () => {
-    const upstream = JSON.parse(await readFile(new URL('../upstream.json', import.meta.url), 'utf8'));
-    const archive = new URL(`../.build/${upstream.commit}.tar.gz`, import.meta.url);
-    assert.equal(createHash('sha256').update(await readFile(archive)).digest('hex'), upstream.archiveSha256);
-    const paths = ['src/scripts/libraryMenu.js', 'src/components/router/appRouter.js', 'src/utils/dashboard.js'];
-    const originalLibrary = execFileSync('tar', ['-xOf', archive.pathname, `jellyfin-web-${upstream.commit}/${paths[0]}`], { encoding: 'utf8' });
-    const originalHeader = originalLibrary.match(/html \+= '.*class="headerSyncButton.*';/)[0];
+test('Modern native account controls call the in-document broker without navigating or logging out', async () => {
     const files = await patchedUpstream();
-    const library = files.get(paths[0]);
-    assert.ok(library.includes(originalHeader));
-    assert.ok(library.includes("headerSyncButton.title = 'Watch party'"));
-    assert.ok(!library.includes("${globalize.translate('ButtonSignOut')}"));
-    assert.match(library, /class="navMenuOptionText">Jellyfin accounts<\/span>/);
+    const userMenu = files.get('src/components/toolbar/AppUserMenu.tsx');
+    assert.ok(userMenu.includes('Jellyfin accounts'));
+    assert.ok(userMenu.includes('Dashboard.logout();'));
+    assert.ok(userMenu.includes('Dashboard.selectServer();'));
+    assert.ok(!userMenu.includes('QuickConnect'), 'broker account login owns Quick Connect, without a forbidden native enablement probe');
+    assert.ok(!files.has('src/scripts/libraryMenu.js'), 'the Activity does not integrate the old application toolbar');
     const called = [];
-    const runtime = () => Promise.resolve({ openAccounts: () => { called.push('accounts'); return 'picker'; }, openWatchMenu: button => { called.push(button); return 'party'; } });
-    const button = { role: 'native-syncplay-button' };
-    const watch = library.match(/function onSyncButtonClicked\(\) \{([\s\S]*?)\n\}/)[1];
+    const runtime = () => Promise.resolve({ openAccounts: () => { called.push('accounts'); return 'picker'; } });
     const execute = (body, receiver) => new Function('runtime', body.replaceAll("import('discordActivity/runtime')", 'runtime()')).call(receiver, runtime);
-    assert.equal(await execute(watch, button), 'party');
-    const router = files.get(paths[1]);
+    const router = files.get('src/components/router/appRouter.js');
     for (const name of ['showLocalLogin', 'showSelectServer']) {
         const body = router.match(new RegExp(`    ${name}\\(\\) \\{([\\s\\S]*?)\\n    \\}`))[1];
         assert.equal(await execute(body, { show() { assert.fail('Document/router navigation is forbidden'); } }), 'picker');
     }
-    const dashboard = files.get(paths[2]);
+    const dashboard = files.get('src/utils/dashboard.js');
     for (const name of ['logout', 'selectServer']) {
         const body = dashboard.match(new RegExp(`export function ${name}\\(\\) \\{([\\s\\S]*?)\\n\\}`))[1];
         assert.equal(await execute(body), 'picker');
     }
-    assert.deepEqual(called, [button, 'accounts', 'accounts', 'accounts', 'accounts']);
+    assert.deepEqual(called, ['accounts', 'accounts', 'accounts', 'accounts']);
     assert.ok(!dashboard.includes('ServerConnections.logout()'));
     await assert.rejects(patchNativeIntegration(async (path, before) => {
         assert.equal(files.get(path).split(before).length, 2, 'Repeated patch must fail its anchor');
     }), /Repeated patch/);
+});
+
+test('Modern toolbar and video OSD use their native MUI watch-party button without querying or exposing other SyncPlay groups', async () => {
+    const files = await patchedUpstream();
+    const source = files.get('src/apps/modern/components/AppToolbar/SyncPlayButton.tsx');
+    const compiled = ts.transpileModule(source, { compilerOptions: {
+        module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022
+    } }).outputText;
+    const called = []; const exports = {}; let isActive = false; let access = 'CreateAndJoinGroups';
+    vm.runInNewContext(compiled, { exports, require(name) {
+        if (name.startsWith('@mui/')) return { default: name };
+        if (name === 'react') return { default: { createElement: (type, props, ...children) => ({ type, props, children }) }, useCallback: fn => fn };
+        if (name === '@jellyfin/sdk/lib/generated-client/models/sync-play-user-access-type') return { SyncPlayUserAccessType: { None: 'None' } };
+        if (name === 'hooks/useApi') return { useApi: () => ({ user: { Policy: { SyncPlayAccess: access } } }) };
+        if (name === 'apps/modern/features/syncPlay/hooks/useSyncPlay') return { useSyncPlay: () => ({ isActive }) };
+        if (name === 'components/pluginManager') return { pluginManager: { ofType: () => ['syncPlay'] } };
+        if (name === 'constants/pluginType') return { PluginType: { SyncPlay: 'SyncPlay' } };
+        if (name === 'discordActivity/runtime') return { openWatchMenu: anchor => { called.push(anchor); return 'party'; } };
+        throw new Error(`Unexpected Modern watch control import: ${name}`);
+    } });
+    const descendants = node => node && typeof node === 'object' ? [node, ...node.children.flatMap(descendants)] : [];
+    const render = () => descendants(exports.default());
+    let nodes = render();
+    const button = nodes.find(node => node.type === '@mui/material/IconButton');
+    assert.equal(button.props['aria-label'], 'Watch party');
+    assert.equal(button.props['aria-haspopup'], 'true');
+    assert.equal(nodes.find(node => node.type === '@mui/material/Badge').props.invisible, true);
+    assert.equal(called.length, 0, 'rendering a toolbar cannot launch a party action');
+    const anchor = { role: 'native-mui-button' };
+    assert.equal(await button.props.onClick({ currentTarget: anchor }), 'party');
+    assert.deepEqual(called, [anchor]);
+    isActive = true; nodes = render();
+    assert.equal(nodes.find(node => node.type === '@mui/material/Badge').props.invisible, false);
+    access = 'None'; assert.equal(exports.default(), null, 'native SyncPlay permission guard is preserved');
+    for (const path of ['src/apps/modern/components/AppToolbar/index.tsx', 'src/apps/modern/routes/video/index.tsx']) {
+        const parent = files.get(path);
+        assert.ok(parent.includes('<SyncPlayButton />'));
+        assert.ok(!parent.includes('RemotePlayButton'), 'unsupported remote playback cannot bypass the Activity player');
+    }
+    assert.ok(files.get('src/apps/modern/routes/video/index.tsx').includes("controller='playback/video/index'"),
+        'Modern continues to use upstream’s shared video controller and its seek/fullscreen integration');
 });
 
 test('same-route native view reloads for a replacement ApiClient, including another account on the same server', async () => {
@@ -74,10 +108,10 @@ test('same-route native view reloads for a replacement ApiClient, including anot
         if (name === 'react-router-dom') return { useLocation: () => ({ pathname: '/home', search: '', state: null }), useNavigationType: () => 'PUSH' };
         if (name === 'hooks/useApi') return { useApi: () => ({ __legacyApiClient__: client }) };
         if (name === 'history') return { Action: { Pop: 'POP' } };
-        if (name === 'constants/appType') return { AppType: { Stable: 'stable', Dashboard: 'dashboard', Wizard: 'wizard' } };
+        if (name === 'constants/appType') return { AppType: { Legacy: 'legacy', Dashboard: 'dashboard', Wizard: 'wizard' } };
         if (name === 'lib/globalize') return { default: { translateHtml: html => html } };
         if (name === './viewManager') return { default: { loadView: options => loads.push(options) } };
-        if (name.startsWith('../../controllers/')) return { default: 'native fixture' };
+        if (name.startsWith('../../apps/legacy/controllers/')) return { default: 'native fixture' };
         throw new Error(`Unexpected test import: ${name}`);
     } });
     const render = () => exports.default({ controller: 'home', view: 'home.html' });
@@ -91,30 +125,41 @@ test('same-route native view reloads for a replacement ApiClient, including anot
     assert.equal(loads[1].url, '/home');
 });
 
-test('replaced-client WebSocket messages cannot affect the current native party', async () => {
+test('Jellyfin 12 notification subscriptions ignore replaced clients and clean up their actual handlers', async () => {
     const files = await patchedUpstream();
-    const body = files.get('src/scripts/serverNotifications.js').match(/function onMessageReceived\(e, msg\) \{([\s\S]*?)\n\}/)[1];
-    const current = { serverId: () => 'same-server' };
-    const old = { serverId: () => 'same-server' };
-    const received = [];
-    let pluginReads = 0;
-    const handler = new Function('ServerConnections', 'pluginManager', 'PluginType', `return function(e, msg) {${body}\n}`)(
-        { currentApiClient: () => current },
-        { firstOfType() { pluginReads++; return { instance: { Manager: {
-            processCommand: (data, client) => received.push(['command', data, client]),
-            processGroupUpdate: (data, client) => received.push(['group', data, client])
-        } } }; } }, { SyncPlay: 'syncplay' });
-    handler.call(old, {}, { MessageType: 'SyncPlayGroupUpdate', Data: 'old-join' });
-    handler.call(old, {}, { MessageType: 'SyncPlayCommand', Data: 'old-play' });
-    assert.equal(pluginReads, 0);
-    assert.equal(received.length, 0);
-    handler.call(current, {}, { MessageType: 'SyncPlayGroupUpdate', Data: 'current-join' });
-    assert.deepEqual(received, [['group', 'current-join', current]]);
+    const connection = files.get('src/lib/jellyfin-apiclient/ServerConnections.js');
+    assert.ok(connection.includes('installNativeSocket(apiClient, Events, () => this.currentApiClient() === apiClient)'));
+    const source = files.get('src/scripts/serverNotifications.js');
+    const body = source.match(/function subscribeToApiClient\(apiClient\) \{([\s\S]*?)\n\}/)[1];
+    const received = []; const handlers = new Map(); let current = true;
+    const socket = { onStatusChange: () => () => {}, disconnect() {} };
+    const client = { _sdk: { webSocket: socket, update() {}, subscribe(types, callback) {
+        for (const type of types) handlers.set(type, callback);
+        return () => { for (const type of types) handlers.delete(type); };
+    } } };
+    installNativeSocket(client, { trigger() {} }, () => current);
+    const types = Object.fromEntries(['Play', 'Playstate', 'GeneralCommand', 'SyncPlayCommand', 'SyncPlayGroupUpdate'].map(value => [value, value]));
+    const invoke = new Function('apiClient', 'OutboundWebSocketMessageType', 'pluginManager', 'PluginType', 'Events', 'serverNotifications', 'onPlay', 'onPlaystate', 'processGeneralCommand', body);
+    const cleanup = invoke(client, types, { firstOfType: () => ({ instance: { Manager: {
+        processCommand: value => received.push(value), processGroupUpdate: value => received.push(value)
+    } } }) }, { SyncPlay: 'syncplay' }, { trigger() {} }, {}, assert.fail, assert.fail, assert.fail);
+    const oldCallback = handlers.get('SyncPlayCommand');
+    oldCallback({ Data: 'current-play' }); assert.deepEqual(received, ['current-play']);
+    current = false; oldCallback({ Data: 'old-play' }); assert.deepEqual(received, ['current-play']);
+    cleanup(); assert.equal(handlers.size, 0);
+    current = true; oldCallback({ Data: 'unsubscribed-play' }); assert.deepEqual(received, ['current-play']);
+    client.closeWebSocket();
 });
 
 test('direct account routes use a lazy native dialog and return Home without reloading the document', async () => {
     const files = await patchedUpstream();
-    const routes = files.get('src/apps/stable/routes/routes.tsx');
+    const root = files.get('src/RootAppRouter.tsx');
+    assert.ok(root.includes('...MODERN_APP_ROUTES,'));
+    assert.ok(!root.includes('LEGACY_APP_ROUTES'), 'the unused old application route tree is neither imported nor selectable');
+    assert.ok(root.includes('<AppHeader isHidden={layoutManager.modern || isNewLayoutPath} />'),
+        'upstream shared controllers retain their required hidden header DOM');
+    const routes = files.get('src/apps/modern/routes/routes.tsx');
+    assert.ok(!files.has('src/apps/legacy/routes/routes.tsx'));
     assert.ok(routes.indexOf('...ACCOUNT_ROUTE_PATHS.map') < routes.indexOf('/* User routes */'), 'broker account routes must bypass ConnectionRequired bounce');
     for (const collection of ['ASYNC_PUBLIC_ROUTES', 'LEGACY_PUBLIC_ROUTES']) {
         assert.ok(routes.includes(`${collection}.filter(route => !ACCOUNT_ROUTE_PATHS.includes(route.path))`));

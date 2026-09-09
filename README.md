@@ -47,13 +47,13 @@ Production requires strong credentials, an allowed Discord server/user and trust
 
 ## Development
 
-Build the pinned native client with Node22/npm10:
+Build the pinned Jellyfin Web12 client with Node24/npm11:
 
 ```bash
 node native-client/build.mjs
 ```
 
-Then use Node24 and the pinned pnpm version through Corepack:
+Use the pinned pnpm version through Corepack for the workspace:
 
 ```bash
 corepack enable
@@ -66,7 +66,7 @@ pnpm test
 cp -R apps/activity-web/dist/. native-client/dist/
 ```
 
-The last command combines the session library and branding assets with the native client for local API serving. The Dockerfile handles both toolchains and packages the complete document. Install workspace dependencies before running native DOM tests. Isolated development can use `NODE_ENV=development`, `DEV_AUTH_MOCK=true` and `VITE_DEV_DISCORD_MOCK=true`; production rejects mock authentication. The native source pin, patches and build instructions are in [native-client](native-client/README.md).
+The last command combines the session library and branding assets with the native client for local API serving. The Dockerfile packages the complete document using Node24. Install workspace dependencies before running native DOM tests. Isolated development can use `NODE_ENV=development`, `DEV_AUTH_MOCK=true` and `VITE_DEV_DISCORD_MOCK=true`; production rejects mock authentication. The native source pin, patches and build instructions are in [native-client](native-client/README.md).
 
 ## Documentation and licensing
 

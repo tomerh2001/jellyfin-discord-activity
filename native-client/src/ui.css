@@ -1,31 +1,9 @@
-/* Account controls use Jellyfin's own form/dialog elements and theme colors. */
-.discordNativeDialog {
-    width: min(40em, calc(100% - 2em));
-    max-height: calc(100vh - 2em);
-    max-height: calc(100dvh - 2em);
-    min-width: 0;
-}
-.discordNativeDialog .formDialogContent { min-height: 0; }
-.discordNativeLoading .discordNativeDialogContent { padding-top: max(1em, env(safe-area-inset-top)); }
-.discordNativeDialogContent {
-    padding: .5em max(1em, env(safe-area-inset-right)) max(1em, env(safe-area-inset-bottom)) max(1em, env(safe-area-inset-left));
+/* All dialogs and forms use Jellyfin Modern's MUI components and theme. */
+.discordModernDialog .MuiDialogContent-root {
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
     overflow-wrap: anywhere;
 }
-.discordNativeDialogContent [hidden] { display: none !important; }
-.discordNativeDialogContent input { width: 100%; min-width: 0; box-sizing: border-box; }
-.discordNativeDialogContent button { min-height: 44px; max-width: 100%; white-space: normal; }
-.discordNativeDialogContent form > button { width: 100%; margin: 0 0 1em; }
-.discordNativeDialogActions { display: flex; flex-wrap: wrap; gap: .5em; margin-top: 1em; }
-.discordNativeSaved { margin-bottom: 1.5em; }
-.discordNativeSaved:empty { display: none; }
-.discordNativeSavedRow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .5em; margin-bottom: .5em; }
-.discordNativeAccount { display: flex; flex-direction: column; align-items: flex-start; text-align: start; width: 100%; }
-.discordNativeQuick { padding: 1em 0; }
-.discordNativeQuickCode { display: block; font-size: 2em; letter-spacing: .12em; margin-bottom: .75em; }
-@media (max-width: 40em) {
-    .discordNativeDialog {
-        width: 100%; height: 100%; max-height: 100%; border-radius: 0;
-    }
-    .discordNativeDialog .formDialogHeader { padding-top: max(1em, env(safe-area-inset-top)); }
-    .discordNativeDialogActions > button { flex: 1 1 10em; }
+.discordModernDialog .MuiButton-root {
+    min-height: 44px;
+    white-space: normal;
 }

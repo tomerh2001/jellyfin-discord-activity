@@ -1,4 +1,4 @@
-/* This is Jellyfin's own emby-button within its video controls. */
+/* Device playback permission uses Jellyfin's native dialog controls. */
 .discordPlaybackPermission { margin: .5em; }
 /* Casting would leave the Activity's verified media gateway. */
 [data-discord-activity] .headerCastButton { display: none !important; }
@@ -26,6 +26,11 @@
 [data-discord-video="true"][data-discord-preview="true"] .upNextContainer,
 [data-discord-video="true"][data-discord-preview="true"] .dialogContainer,
 [data-discord-video="true"][data-discord-preview="true"] .toast,
+[data-discord-video="true"][data-discord-preview="true"] .MuiAppBar-root,
+[data-discord-video="true"][data-discord-preview="true"] .MuiDrawer-root,
+[data-discord-video="true"][data-discord-preview="true"] .MuiModal-root,
+[data-discord-video="true"][data-discord-preview="true"] .MuiSnackbar-root,
+[data-discord-video="true"][data-discord-preview="true"] .MuiTooltip-popper,
 [data-discord-video="true"][data-discord-preview="true"] .discordPlaybackPermission { visibility: hidden !important; pointer-events: none !important; }
 [data-discord-video="true"][data-discord-preview="true"] .videoSubtitles { font-size: clamp(9px, 4.5vh, 22px) !important; }
 [data-discord-video="true"][data-discord-preview="true"] .htmlvideoplayer::-webkit-media-text-track-container { font-size: clamp(9px, 4.5vh, 22px) !important; }

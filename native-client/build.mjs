@@ -9,6 +9,8 @@ import { patchVideoUnpause } from './videoPlaybackPatch.mjs';
 import { patchNativeIntegration } from './integrationPatch.mjs';
 import { patchNativeStartup } from './startupPatch.mjs';
 import { patchNativeSeekPreview } from './seekPreviewPatch.mjs';
+import { patchModernPresentation } from './presentationPatch.mjs';
+import { patchAccountView } from './accountPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -44,15 +46,23 @@ async function replace(relative, before, after) {
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
 await patchNativeIntegration(replace);
 await patchNativeStartup(replace);
-const seekController = path.join(source, 'src/controllers/playback/video/index.js');
+await patchModernPresentation(replace);
+await patchAccountView(replace);
+const seekController = path.join(source, 'src/apps/legacy/controllers/playback/video/index.js');
 await writeFile(seekController, patchNativeSeekPreview(await readFile(seekController, 'utf8')));
 await replace('webpack.common.js', "const NODE_MODULES_REGEX =", `// Pin build metadata to Jellyfin's source, not a containing checkout.\nCOMMIT_SHA = '${upstream.commit}';\nconst NODE_MODULES_REGEX =`);
 await replace('src/index.jsx', "import RootApp from './RootApp';", "import RootApp from './RootApp';\nimport { bootstrapDiscord, finishDiscordBootstrap, failDiscordBootstrap } from './discordActivity/runtime';");
-await replace('src/index.jsx', `    // Initialize the api client
-    const serverUrl = await serverAddress();
-    if (serverUrl) {
-        ServerConnections.initApiClient(serverUrl);
-    }`, '    // Keep Discord and Jellyfin in one native document.\n    await bootstrapDiscord();');
+await replace('src/index.jsx', `    // Find the correct server URL
+    const lastServer = ServerConnections.getLastUsedServer();
+    let serverUrl;
+    if (lastServer) {
+        serverUrl = getServerAddress(lastServer);
+    } else {
+        serverUrl = await serverAddress();
+    }
+    // Initialize the api client
+    if (serverUrl) ServerConnections.initApiClient(serverUrl);`, '    // Keep Discord and Jellyfin in one native document.\n    await bootstrapDiscord();');
+await replace('src/index.jsx', "import getServerAddress from 'lib/jellyfin-apiclient/utils/getServerAddress';\n", '');
 await replace('src/index.jsx', "import { pageClassOn, serverAddress } from './utils/dashboard';", "import { pageClassOn } from './utils/dashboard';");
 await replace('src/index.jsx', '    // Load the translation dictionary\n    await loadCoreDictionary();', '    // The dictionary was loaded before the native account dialogs.');
 await replace('src/index.jsx', '    await bootstrapDiscord();', '    await loadCoreDictionary();\n    await bootstrapDiscord();');
@@ -75,8 +85,7 @@ await replace('src/plugins/syncPlay/core/Helper.js',
                     // A playable selected episode may be absent from the expanded
                     // series list. Keep that selection rather than sending an empty queue.
                     resolve(episodesResult.Items.length ? episodesResult : null);`);
-await replace('src/RootAppRouter.tsx', "const layoutMode = localStorage.getItem('layout');\nconst isExperimentalLayout = layoutMode === 'experimental';", '// The supported Activity UI is the native stable Jellyfin client.\nconst isExperimentalLayout = false;');
-await replace('src/apps/stable/features/playback/utils/mediaSegmentSettings.ts', '    return action ? action as MediaSegmentAction : defaultAction;', `    // An individual's automatic skip preference must not seek the whole party.
+await replace('src/apps/legacy/features/playback/utils/mediaSegmentSettings.ts', '    return action ? action as MediaSegmentAction : defaultAction;', `    // An individual's automatic skip preference must not seek the whole party.
     if (action === MediaSegmentAction.Skip) return MediaSegmentAction.AskToSkip;
     return action ? action as MediaSegmentAction : defaultAction;`);
 for (const player of ['htmlVideoPlayer', 'htmlAudioPlayer']) {
@@ -93,7 +102,7 @@ await writeFile(configPath, JSON.stringify(config, null, 2) + '\n');
 
 if (!process.argv.includes('--prepare-only')) {
     const npmVersion = spawnSync('npm', ['--version'], { encoding: 'utf8' }).stdout?.trim();
-    if (!npmVersion || Number(npmVersion.split('.')[0]) >= 11) throw new Error('Native Jellyfin build requires npm9/10 (use Node22), as specified by upstream.');
+    if (!npmVersion || Number(npmVersion.split('.')[0]) < 11 || Number(process.versions.node.split('.')[0]) < 24) throw new Error('Native Jellyfin 12 build requires Node24 and npm11 or newer, as specified by upstream.');
     run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund']);
     run('npm', ['run', 'build:production'], source, { JELLYFIN_VERSION: upstream.version, NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=6144' });
     await rm(path.join(root, 'dist'), { recursive: true, force: true });

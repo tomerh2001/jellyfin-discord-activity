@@ -4,6 +4,12 @@ const ROUTE_PARAMETERS: Record<string, ReadonlySet<string>> = {
   movies: new Set(["serverId", "topParentId", "collectionType", "tab"]),
   tv: new Set(["serverId", "topParentId", "collectionType", "tab"]),
   music: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  homevideos: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  musicvideos: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  boxsets: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  playlists: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  mixed: new Set(["serverId", "topParentId", "collectionType", "tab"]),
+  books: new Set(["serverId", "topParentId", "collectionType", "tab"]),
   list: new Set(["serverId", "parentId", "topParentId", "type", "sortBy", "sortOrder", "startIndex"]),
   search: new Set(["serverId", "parentId", "collectionType", "query"])
 };
@@ -23,7 +29,7 @@ export function normalizeNativeRoute(value: unknown, serverId: string): string |
     if (key === "serverId") { if (part !== serverId) return null; }
     else if (["id", "parentId", "topParentId"].includes(key)) { if (!/^[a-f0-9]{32}$/i.test(part)) return null; }
     else if (["tab", "startIndex"].includes(key)) { if (!/^\d{1,6}$/.test(part)) return null; }
-    else if (key === "collectionType") { if (!["movies", "tvshows", "music", "musicvideos", "homevideos", "books", "boxsets", "playlists"].includes(part)) return null; }
+    else if (key === "collectionType") { if (!["movies", "tvshows", "music", "musicvideos", "homevideos", "books", "boxsets", "playlists", "mixed"].includes(part)) return null; }
     else if (key === "context") { if (!["home", "tvshows", "folders", "movies", "music"].includes(part)) return null; }
     else if (key === "type") { if (!["Movie", "Series", "Episode", "MusicAlbum", "Audio", "BoxSet", "Folder"].includes(part)) return null; }
     else if (key === "sortOrder") { if (!["Ascending", "Descending"].includes(part)) return null; }

@@ -1,4 +1,4 @@
-FROM node:22-alpine AS native
+FROM node:24-alpine AS native
 RUN apk add --no-cache git
 WORKDIR /app
 COPY native-client ./native-client
