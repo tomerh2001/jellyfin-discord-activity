@@ -12,6 +12,14 @@ export function createNativeUi({ onChange = () => {}, toast = () => {},
     const safeError = (cause, fallback = 'Could not connect. Try again.') =>
         cause instanceof Error && cause.message ? cause.message.slice(0, 500) : fallback;
 
+    function handleCommand(event) {
+        const top = snapshot.at(-1);
+        if (!top || event.detail?.command !== 'back') return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        top.dismiss();
+    }
+
     function open(kind, state, canDismiss = () => true, cleanup = () => {}) {
         const id = ++sequence;
         let closed = false;
@@ -200,6 +208,6 @@ export function createNativeUi({ onChange = () => {}, toast = () => {},
         return { update: patch => dialog.update(patch), close: () => dialog.close() };
     }
 
-    return { subscribe, getSnapshot, chooseAccount, confirmServerChange, showWatchMenu, showLoading,
+    return { subscribe, getSnapshot, handleCommand, chooseAccount, confirmServerChange, showWatchMenu, showLoading,
         showStartupError, showClosed, mountPlaybackPermission };
 }

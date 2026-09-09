@@ -5,6 +5,7 @@ import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogCont
     ListItemIcon, ListItemText, Menu, MenuItem, Snackbar, Stack, TextField, Typography } from '@mui/material';
 import { ThemeProvider } from '@mui/material/styles';
 import appTheme from 'themes';
+import { on as onInputCommand } from 'scripts/inputManager';
 import { ThemeStorageManager } from 'themes/themeStorageManager';
 import { createNativeUi } from './uiCore';
 import { createModernComponents } from './uiComponents';
@@ -34,6 +35,10 @@ function ensureHost() {
     const element = document.createElement('div');
     element.id = 'discord-modern-dialogs';
     document.body.appendChild(element);
+    // Register with Jellyfin so it emits native Back commands, and contain them
+    // before underlying page/player handlers can navigate during a dialog.
+    onInputCommand(window, controller.handleCommand);
+    window.addEventListener('command', controller.handleCommand, true);
     host = createRoot(element);
     host.render(React.createElement(ModernUiHost));
 }

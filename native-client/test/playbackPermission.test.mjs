@@ -22,7 +22,8 @@ function fixture(command) {
     const dispose = installPlaybackPermission({ document, HTMLMediaElement: Media }, () => command, mount);
     return { Media, state, listeners, dispose, click: () => state.onActivate(),
         block: media => listeners.get(PLAYBACK_BLOCKED_EVENT)({ target: media }),
-        playing: media => listeners.get('playing')({ target: media }) };
+        playing: media => listeners.get('playing')({ target: media }),
+        emptied: media => listeners.get('emptied')({ target: media }) };
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -81,4 +82,28 @@ test('playing events dismiss only the matching media and disposal invalidates pe
     assert.equal(f.state.visible, false); assert.equal(video.pauses, 0); assert.equal(f.listeners.size, 0);
     const next = fixture(); const playing = new next.Media(); next.block(playing); next.playing(playing);
     assert.equal(next.state.visible, false); next.dispose();
+});
+
+
+test('unloading a still-connected blocked video closes the modal and invalidates late play completion', async () => {
+    for (const reject of [false, true]) {
+        const f = fixture({ Command: 'Pause' }); const video = new f.Media(); let settle;
+        video.play = () => new Promise((resolve, fail) => { settle = reject ? () => fail(new Error('source unloaded')) : resolve; });
+        f.block(video); f.click();
+        f.emptied(new f.Media()); assert.equal(f.state.visible, true);
+        f.emptied(video); assert.equal(video.isConnected, true); assert.equal(f.state.visible, false);
+        settle(); await flush();
+        assert.equal(f.state.visible, false); assert.equal(video.pauses, 0); f.dispose();
+    }
+});
+
+
+test('explicit Stop reset invalidates a detached video request but keeps listeners for the next title', async () => {
+    const f = fixture({ Command: 'Unpause' }); const video = new f.Media(); let rejectPlay;
+    video.play = () => new Promise((_resolve, reject) => { rejectPlay = reject; });
+    f.block(video); f.click(); video.isConnected = false;
+    f.dispose.reset(); assert.equal(f.state.visible, false); assert.equal(f.listeners.size, 4);
+    rejectPlay(new Error('stopped')); await flush(); assert.equal(f.state.visible, false);
+    const next = new f.Media(); f.block(next); f.click(); assert.equal(next.plays, 1);
+    await flush(); assert.equal(f.state.visible, false); f.dispose(); assert.equal(f.listeners.size, 0);
 });

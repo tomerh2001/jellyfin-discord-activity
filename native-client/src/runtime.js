@@ -35,6 +35,7 @@ let accountDialog;
 let stopClient = () => {};
 let clearPresence = () => {};
 let videoPresentation;
+let resetPlaybackPermission = () => {};
 let navigation;
 let status = 'Choose something to watch';
 const deviceId = crypto.randomUUID();
@@ -44,6 +45,7 @@ function reportError(message) { toast({ text: message }); }
 
 async function stopNative() {
     switching = true;
+    resetPlaybackPermission();
     clearTimeout(reconnectTimer);
     joining = undefined;
     stopClient();
@@ -245,9 +247,10 @@ export async function finishDiscordBootstrap() {
         status = 'Watching together';
     });
     videoPresentation = observeVideoPresentation(document, value => value instanceof HTMLVideoElement, () => {});
-    const stopped = () => { videoPresentation.stop(); status = 'Choose something to watch'; };
+    const stopped = () => { resetPlaybackPermission(); videoPresentation.stop(); status = 'Choose something to watch'; };
     Events.on(playbackManager, 'playbackstop', stopped);
     const stopPermission = installPlaybackPermission(window, () => SyncPlay.Manager.getLastPlaybackCommand(), mountPlaybackPermission);
+    resetPlaybackPermission = stopPermission.reset;
     onDocumentExit(window, () => { stopObserving(); videoPresentation.dispose(); stopPermission(); Events.off(playbackManager, 'playbackstop', stopped); });
     watchClient();
     let polling = false;

@@ -34,7 +34,11 @@ The build applies a small integration patch before compiling the upstream source
 - Account selection uses Jellyfin Modern's MUI dialog and form components.
   It supports saved accounts, server URL and
   password login, Quick Connect, explicit community-account selection, and saved
-  account removal. Modern login and server-selection routes open this chooser,
+  account removal. One persistent React dialog root uses Jellyfin’s upstream
+  theme and storage manager in the same document. It mounts before RootApp:
+  bootstrap waits for account selection, so mounting dialogs inside the router
+  would deadlock first-time sign-in. Account subtree remounts do not remove it.
+  Modern login and server-selection routes open this chooser,
   and the native user menu exposes **Jellyfin accounts**.
   Quick Connect polls sequentially and aborts on cancellation; late results
   cannot select an account after the dialog closes. Failed requests leave an
@@ -80,7 +84,10 @@ The build applies a small integration patch before compiling the upstream source
   available on failure and disappears when playback succeeds. Native
   `playbackstart` fires during preparation and cannot prove autoplay succeeded.
   The native video player's separate `unpause()` path also reports a rejected
-  play attempt to the same recovery control.
+  play attempt to the same recovery control. Stop and account replacement
+  explicitly reset that prompt and invalidate pending play attempts. Native
+  destruction can detach the video before its queued `emptied` event reaches
+  the document, so listening for `emptied` alone is insufficient.
 - Native view navigation bubbles a custom `pagehide` from a DIV. It must not
   dispose document-wide adapter listeners. `onDocumentExit` accepts only a real
   window `PageTransitionEvent` with `persisted: false`; it does not use `once`,

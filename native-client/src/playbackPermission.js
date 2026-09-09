@@ -6,6 +6,11 @@ export function installPlaybackPermission(host, getLastCommand, mountPermission)
     let generation = 0;
     let permission;
     const remove = () => { permission?.close(); permission = undefined; };
+    const reset = () => {
+        generation++;
+        blockedMedia = undefined;
+        remove();
+    };
     const show = (label = 'Tap to play on this device') => {
         if (permission) permission.update({ label, disabled: false });
         else permission = mountPermission({ label, disabled: false, onActivate: click });
@@ -22,6 +27,10 @@ export function installPlaybackPermission(host, getLastCommand, mountPermission)
             blockedMedia = undefined;
             remove();
         }
+    };
+    const emptied = event => {
+        if (event.target !== blockedMedia) return;
+        reset();
     };
     const click = () => {
         const media = blockedMedia;
@@ -49,11 +58,17 @@ export function installPlaybackPermission(host, getLastCommand, mountPermission)
     };
     host.document.addEventListener(PLAYBACK_BLOCKED_EVENT, blocked, true);
     host.document.addEventListener('playing', playing, true);
-    return () => {
-        generation++;
+    host.document.addEventListener('emptied', emptied, true);
+    host.document.addEventListener('error', emptied, true);
+    const dispose = () => {
+        reset();
         host.document.removeEventListener(PLAYBACK_BLOCKED_EVENT, blocked, true);
         host.document.removeEventListener('playing', playing, true);
-        remove();
-        blockedMedia = undefined;
+        host.document.removeEventListener('emptied', emptied, true);
+        host.document.removeEventListener('error', emptied, true);
     };
+    // Native Stop can detach the video before its queued emptied event fires.
+    // Reset the current attempt without removing listeners for the next title.
+    dispose.reset = reset;
+    return dispose;
 }

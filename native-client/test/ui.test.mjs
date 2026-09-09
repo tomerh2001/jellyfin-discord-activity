@@ -33,6 +33,7 @@ function fixture() {
     const controller = createNativeUi({ toast: value => toasts.push(value), now: () => 1000,
         setTimeout: callback => { const id = ++timerId; timers.set(id, callback); return id; },
         clearTimeout: id => timers.delete(id) });
+    window.addEventListener('command', controller.handleCommand, true);
     const ui = Object.fromEntries(Object.entries(controller).map(([name, method]) => [name, (...args) => {
         let result; React.act(() => { result = method(...args); }); return result;
     }]));
@@ -44,7 +45,7 @@ function fixture() {
         click: node => React.act(() => node.click()),
         dialog: () => document.querySelector('[role="dialog"]'),
         tick() { React.act(() => { const entry = timers.entries().next().value; if (entry) { timers.delete(entry[0]); entry[1](); } }); },
-        close() { React.act(() => root.unmount()); element.remove(); document.body.replaceChildren(); } };
+        close() { window.removeEventListener('command', controller.handleCommand, true); React.act(() => root.unmount()); element.remove(); document.body.replaceChildren(); } };
     return f;
 }
 
@@ -229,6 +230,9 @@ test('required chooser blocks escape and external abort still clears credentials
         assert.equal(f.button('Back to watching'), undefined);
         React.act(() => f.dialog().dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
         assert.ok(f.dialog());
+        const back = new window.CustomEvent('command', { detail: { command: 'back' }, bubbles: true, cancelable: true });
+        React.act(() => f.dialog().dispatchEvent(back));
+        assert.equal(back.defaultPrevented, true); assert.ok(f.dialog());
         const form = f.document.querySelector('form'); const password = form.elements.namedItem('password');
         form.elements.namedItem('username').value = 'Viewer'; password.value = 'secret';
         React.act(() => form.dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true })));
@@ -251,5 +255,22 @@ test('permission uses an actual MUI button and preserves direct gesture plus upd
         React.act(() => handle.update({ disabled: false, label: 'Try playing again' }));
         assert.equal(button.textContent, 'Try playing again'); assert.equal(button.disabled, false);
         React.act(() => { handle.close(); handle.close(); }); assert.equal(f.dialog(), null);
+    } finally { f.close(); }
+});
+
+
+test('native Back dismisses only the top cancellable dialog and never reaches the underlying page', async () => {
+    const f = fixture();
+    try {
+        let underlyingBacks = 0;
+        const underlying = () => { underlyingBacks++; };
+        document.addEventListener('command', underlying);
+        const chooser = f.ui.chooseAccount({ data });
+        const confirmation = f.ui.confirmServerChange(connection);
+        const back = () => new window.CustomEvent('command', { detail: { command: 'back' }, bubbles: true, cancelable: true });
+        React.act(() => f.document.querySelectorAll('[role="dialog"]')[1].dispatchEvent(back()));
+        assert.equal(await confirmation, false); assert.ok(f.dialog());
+        React.act(() => f.dialog().dispatchEvent(back())); assert.equal(await chooser, null);
+        assert.equal(underlyingBacks, 0); document.removeEventListener('command', underlying);
     } finally { f.close(); }
 });
