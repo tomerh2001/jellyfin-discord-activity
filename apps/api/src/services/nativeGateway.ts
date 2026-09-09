@@ -28,6 +28,7 @@ const readRules = [
   /^\/(?:Genres|MusicGenres|Artists|Artists\/AlbumArtists|Persons|Studios|Years)$/i,
   /^\/Search\/Hints$/i,
   /^\/Shows\/(?:NextUp|Upcoming)$/i,
+  /^\/Movies\/Recommendations$/i,
   new RegExp(`^/Shows/${ID}/(?:Episodes|Seasons)$`, "i"),
   new RegExp(`^/Videos/${ID}/(?:AdditionalParts|AlternateSources|Subtitles|Attachments)(?:/${ID})*$`, "i"),
   new RegExp(`^/Videos/${ID}/(?:stream(?:\\.[a-z0-9]+)?|master\\.m3u8|main\\.m3u8|hls(?:1)?/${ID}(?:/${ID})*/${ID}\\.[a-z0-9]+|${ID}/Subtitles/\\d+/(?:Stream\\.[a-z0-9]+|\\d+/Stream\\.[a-z0-9]+)|${ID}/Attachments/\\d+)$`, "i"),

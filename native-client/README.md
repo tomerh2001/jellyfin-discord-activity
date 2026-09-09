@@ -9,12 +9,13 @@ The native HashRouter owns navigation within the Activity document.
 
 The build applies a small integration patch before compiling the upstream source:
 
-- Jellyfin 12's upstream **legacy** application supplies the native desktop and
-  mobile controls already integrated with the Activity. Layout selection maps
-  desktop/mobile/modern choices to the corresponding upstream legacy layout and
-  keeps automatic selection within that application. This is the current
-  Jellyfin 12 client, with no iframe or separate playback interface. The upstream
-  modern application is not enabled by this integration.
+- Jellyfin 12's upstream **Modern** application supplies the responsive desktop
+  and mobile interface. The app selects its native desktop/mobile mode before
+  the router initializes, so a stored display preference cannot select the old
+  application. The old layout selector is removed from Modern preferences.
+  Modern's own video page combines its MUI toolbar with Jellyfin's shared video
+  controller; seek previews, fullscreen and SyncPlay extend that same player.
+  There is no iframe or separate playback interface.
 
 - The native document loads the [session library](../apps/activity-web/README.md)
   once, before the adapter initializes. That library supplies Discord SDK
@@ -26,14 +27,15 @@ The build applies a small integration patch before compiling the upstream source
 - Both legacy settings and the React configuration provider use the configuration
   packaged in the same build. They do not fetch `config.json` again at startup.
   Configuration changes therefore require a new native build and release.
-- The existing header SyncPlay button, also available in the native video OSD,
-  opens **Watch party**. Its native action sheet offers invitations, accounts,
+- The Modern toolbar's MUI SyncPlay button, also used by its video OSD,
+  opens **Watch party** only when clicked. Its native controls offer invitations, accounts,
   shared server changes, SyncPlay settings, local playback resume/halt when
   available, and leaving. Fullscreen stays with Jellyfin's player controls.
-- Account selection uses upstream `dialogHelper`, native form classes and
-  `emby-button`/`emby-input` controls. It supports saved accounts, server URL and
+- Account selection uses Jellyfin Modern's MUI dialog and form components.
+  It supports saved accounts, server URL and
   password login, Quick Connect, explicit community-account selection, and saved
-  account removal. Native login and server-selection routes open this chooser.
+  account removal. Modern login and server-selection routes open this chooser,
+  and the native user menu exposes **Jellyfin accounts**.
   Quick Connect polls sequentially and aborts on cancellation; late results
   cannot select an account after the dialog closes. Failed requests leave an
   actionable native error state with loading cleared.
@@ -67,7 +69,9 @@ The build applies a small integration patch before compiling the upstream source
 - Shared playback uses native skip prompts, even if the account previously
   selected automatic skipping. That prevents a personal preference from seeking
   everyone else's playback. Remote player plugins and the group picker are not
-  part of the Activity UI.
+  part of the Activity UI. The shared Modern SyncPlay button does not load or
+  expose arbitrary server groups; the verified Discord party owns membership.
+  Modern toolbar and video controls omit the unsupported remote-player button.
 - A blocked media element opens a native **Join playback** dialog containing
   **Tap to play on this device**. The click calls that exact element's `play()` before any asynchronous
   work; a temporary silent audio probe cannot grant a different video element

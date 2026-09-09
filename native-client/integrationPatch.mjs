@@ -27,22 +27,82 @@ ${indent}    videoElement.${operation}EventListener(event, this.onNativeFullscre
 ${indent}}`);
     }
 
-    await replace('src/scripts/libraryMenu.js',
-        "import groupSelectionMenu from '../plugins/syncPlay/ui/groupSelectionMenu';\n", '');
-    await replace('src/scripts/libraryMenu.js',
-        "        headerSyncButton.title = globalize.translate('ButtonSyncPlay');",
-        "        headerSyncButton.title = 'Watch party';");
-    await replace('src/scripts/libraryMenu.js',
-        "${globalize.translate('ButtonSignOut')}", 'Jellyfin accounts');
-    await replace('src/scripts/libraryMenu.js',
-        `function onSyncButtonClicked() {
-    const btn = this;
-    groupSelectionMenu.show(btn);
-}`,
-        `function onSyncButtonClicked() {
-    const btn = this;
-    return import('discordActivity/runtime').then(module => module.openWatchMenu(btn));
-}`);
+    // The Modern toolbar and video OSD share this native MUI control. Group
+    // membership belongs to the verified Discord party, not a public group list.
+    const syncButton = 'src/apps/modern/components/AppToolbar/SyncPlayButton.tsx';
+    for (const statement of [
+        "import { QUERY_KEY, useSyncPlayGroups } from 'apps/modern/features/syncPlay/hooks/api/useSyncPlayGroups';\n",
+        "import globalize from 'lib/globalize';\n",
+        "import { queryClient } from 'utils/query/queryClient';\n",
+        "import AppSyncPlayMenu, { ID } from './menus/SyncPlayMenu';\n"
+    ]) await replace(syncButton, statement, '');
+    await replace(syncButton, "import React, { useCallback, useState } from 'react';", "import React, { useCallback } from 'react';");
+    await replace(syncButton,
+        `    const { data: groups } = useSyncPlayGroups();
+    const isAvailable = Boolean(groups && groups.length > 0);
+
+    const [ syncPlayMenuAnchorEl, setSyncPlayMenuAnchorEl ] = useState<null | HTMLElement>(null);
+    const isSyncPlayMenuOpen = Boolean(syncPlayMenuAnchorEl);
+
+    const onSyncPlayButtonClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+        // Refresh SyncPlay groups when opening the menu
+        void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+        setSyncPlayMenuAnchorEl(event.currentTarget);
+    }, [ setSyncPlayMenuAnchorEl ]);
+
+    const onSyncPlayMenuClose = useCallback(() => {
+        setSyncPlayMenuAnchorEl(null);
+    }, [ setSyncPlayMenuAnchorEl ]);`,
+        `    const onSyncPlayButtonClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
+        const anchor = event.currentTarget;
+        return import('discordActivity/runtime').then(module => module.openWatchMenu(anchor));
+    }, []);`);
+    await replace(syncButton, "<Tooltip title={globalize.translate('ButtonSyncPlay')}>", "<Tooltip title='Watch party'>");
+    await replace(syncButton, "aria-label={globalize.translate('ButtonSyncPlay')}", "aria-label='Watch party'");
+    await replace(syncButton, '                    aria-controls={ID}\n', '');
+    await replace(syncButton, 'invisible={!isActive && !isAvailable}', 'invisible={!isActive}');
+    await replace(syncButton,
+        `
+            <AppSyncPlayMenu
+                open={isSyncPlayMenuOpen}
+                anchorEl={syncPlayMenuAnchorEl}
+                onMenuClose={onSyncPlayMenuClose}
+            />`, '');
+    await replace('src/components/toolbar/AppUserMenu.tsx',
+        "{globalize.translate('ButtonSignOut')}", 'Jellyfin accounts');
+    // This native shortcut authorizes another device; Activity account login
+    // already provides broker Quick Connect without a forbidden server probe.
+    for (const statement of [
+        "import PhonelinkLock from '@mui/icons-material/PhonelinkLock';\n",
+        "import { useQuickConnectEnabled } from 'hooks/useQuickConnect';\n",
+        '    const { data: isQuickConnectEnabled } = useQuickConnectEnabled();\n'
+    ]) await replace('src/components/toolbar/AppUserMenu.tsx', statement, '');
+    await replace('src/components/toolbar/AppUserMenu.tsx',
+        `            {isQuickConnectEnabled && (
+                <MenuItem
+                    component={Link}
+                    to='/quickconnect'
+                    onClick={onMenuClose}
+                >
+                    <ListItemIcon>
+                        <PhonelinkLock />
+                    </ListItemIcon>
+                    <ListItemText>
+                        {globalize.translate('QuickConnect')}
+                    </ListItemText>
+                </MenuItem>
+            )}
+
+`, '');
+
+    // Unsupported remote playback must not bypass the Activity's local player.
+    for (const [path, statement, indent] of [
+        ['src/apps/modern/components/AppToolbar/index.tsx', "import RemotePlayButton from './RemotePlayButton';\n", '                    '],
+        ['src/apps/modern/routes/video/index.tsx', "import RemotePlayButton from 'apps/modern/components/AppToolbar/RemotePlayButton';\n", '                                ']
+    ]) {
+        await replace(path, statement, '');
+        await replace(path, `${indent}<RemotePlayButton />\n`, '');
+    }
 
     await replace('src/components/router/appRouter.js',
         `    showLocalLogin(serverId) {
@@ -99,14 +159,19 @@ ${indent}}`);
 
     // Direct native links must use the broker too; helper-method interception
     // alone does not cover HashRouter navigation to login or server selection.
-    await replace('src/apps/legacy/routes/routes.tsx',
-        "import AppLayout from '../AppLayout';",
-        "import AppLayout from '../AppLayout';\nimport NativeAccountsRoute, { ACCOUNT_ROUTE_PATHS } from 'discordActivity/accountsRoute';");
-    await replace('src/apps/legacy/routes/routes.tsx',
+    await replace('src/RootAppRouter.tsx',
+        "import { APP_ROUTES as LEGACY_APP_ROUTES } from 'apps/legacy/routes/routes';\n", '');
+    await replace('src/RootAppRouter.tsx',
+        '            ...(layoutManager.modern ? MODERN_APP_ROUTES : LEGACY_APP_ROUTES),',
+        '            ...MODERN_APP_ROUTES,');
+    await replace('src/apps/modern/routes/routes.tsx',
+        "import VideoPage from './video';",
+        "import VideoPage from './video';\nimport NativeAccountsRoute, { ACCOUNT_ROUTE_PATHS } from 'discordActivity/accountsRoute';");
+    await replace('src/apps/modern/routes/routes.tsx',
         "            { index: true, element: <Navigate replace to='/home' /> },",
         "            { index: true, element: <Navigate replace to='/home' /> },\n            ...ACCOUNT_ROUTE_PATHS.map(path => ({ path, Component: NativeAccountsRoute })),");
     for (const [collection, mapper] of [['ASYNC_PUBLIC_ROUTES', 'toAsyncPageRoute'], ['LEGACY_PUBLIC_ROUTES', 'toViewManagerPageRoute']]) {
-        await replace('src/apps/legacy/routes/routes.tsx',
+        await replace('src/apps/modern/routes/routes.tsx',
             `...${collection}.map(${mapper})`,
             `...${collection}.filter(route => !ACCOUNT_ROUTE_PATHS.includes(route.path)).map(${mapper})`);
     }

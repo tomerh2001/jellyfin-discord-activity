@@ -1,4 +1,5 @@
 import { ApiClient } from 'jellyfin-apiclient';
+import { flushSync } from 'react-dom';
 import { ServerConnections } from 'lib/jellyfin-apiclient';
 import { appHost } from 'components/apphost';
 import { playbackManager } from 'components/playback/playbackmanager';
@@ -17,6 +18,7 @@ import { applyPresentation, observeVideoPresentation } from './presentation';
 import { onDocumentExit } from './lifecycle';
 import { observeNavigation, restoredNavigation } from './navigation';
 import { createActivityController, preferredAccount } from './controller';
+import { beginAccountViewChange, finishAccountViewChange } from './accountViewState';
 import { chooseAccount, confirmServerChange, showWatchMenu, showLoading, showStartupError, showClosed, mountPlaybackPermission } from './ui';
 import './style.css';
 
@@ -71,6 +73,9 @@ async function installLaunch(next, connection, isCurrent) {
     navigation = undefined;
     await stopNative();
     if (!isCurrent()) return;
+    // Modern Home retains imperative controllers inside React state. Suspend
+    // account providers before clearing queries and remount them for the new client.
+    flushSync(beginAccountViewChange);
     // Both native query and cached view state belong to the selected account.
     queryClient.clear();
     if (ready) viewContainer.reset();
@@ -97,6 +102,7 @@ async function installLaunch(next, connection, isCurrent) {
     if (result.State !== 'SignedIn') throw new Error('Could not connect to your Jellyfin account. Try choosing it again.');
     ServerConnections.firstConnection = true;
     switching = false;
+    flushSync(finishAccountViewChange);
     if (ready) {
         // A hash navigation uses the current native document and Discord socket.
         await appRouter.show(route);

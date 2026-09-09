@@ -60,22 +60,48 @@ async function getConfig() {
         `function getConfig() {
     return Promise.resolve(DefaultConfig);
 }`);
-    // Jellyfin 12 defaults to the modern app; the Activity uses its retained
-    // native legacy player and controls on both desktop and mobile.
+    // The Activity always uses Jellyfin 12's responsive Modern app. A saved
+    // native display preference must not select another application at startup.
     await replace('src/components/layoutManager.js',
         "import { LayoutMode, LegacyLayoutModes } from 'constants/layoutMode';",
         "import { LayoutMode } from 'constants/layoutMode';");
     await replace('src/components/layoutManager.js',
         "    setLayout(layout = '', save = true) {",
         `    setLayout(layout = '', save = true) {
-        if (layout === LayoutMode.Modern) layout = browser.mobile ? LayoutMode.MobileLegacy : LayoutMode.DesktopLegacy;
-        if (layout === LayoutMode.Desktop) layout = LayoutMode.DesktopLegacy;
-        if (layout === LayoutMode.Mobile) layout = LayoutMode.MobileLegacy;`);
+        layout = browser.mobile ? LayoutMode.Mobile : LayoutMode.Desktop;`);
     await replace('src/components/layoutManager.js',
         '        const isLegacyLayout = LegacyLayoutModes.has(layoutValue);\n', '');
     await replace('src/components/layoutManager.js',
         '        this.modern = !isLegacyLayout;',
-        '        this.modern = false; // Activity integration uses upstream 12 legacy controls.');
+        '        this.modern = true;');
+    await replace('src/apps/modern/features/preferences/components/DisplayPreferences.tsx',
+        "import { LayoutMode } from 'constants/layoutMode';\n", '');
+    await replace('src/apps/modern/features/preferences/components/DisplayPreferences.tsx',
+        `            { appHost.supports(AppFeature.DisplayMode) && (
+                <FormControl fullWidth>
+                    <InputLabel id='display-settings-layout-label'>{globalize.translate('LabelDisplayMode')}</InputLabel>
+                    <Select
+                        aria-describedby='display-settings-layout-description'
+                        inputProps={{
+                            name: 'layout'
+                        }}
+                        labelId='display-settings-layout-label'
+                        onChange={onChange}
+                        value={values.layout}
+                    >
+                        <MenuItem value={LayoutMode.Auto}>{globalize.translate('Auto')}</MenuItem>
+                        <MenuItem value={LayoutMode.DesktopLegacy}>{globalize.translate('Desktop')}</MenuItem>
+                        <MenuItem value={LayoutMode.MobileLegacy}>{globalize.translate('Mobile')}</MenuItem>
+                        <MenuItem value={LayoutMode.Tv}>{globalize.translate('TV')}</MenuItem>
+                    </Select>
+                    <FormHelperText component={Stack} id='display-settings-layout-description'>
+                        <span>{globalize.translate('DisplayModeHelp')}</span>
+                        <span>{globalize.translate('LabelPleaseRestart')}</span>
+                    </FormHelperText>
+                </FormControl>
+            ) }
+
+`, '');
 
     // A gateway capability and account-scoped DTO cache must never be restored
     // from IndexedDB into another Discord Activity document or account.

@@ -1,6 +1,6 @@
 # Jellyfin connections
 
-The bundled native client is pinned to Jellyfin Web12.0. It uses the upstream Legacy layout to retain native playback and watch-party controls. Server URLs are generic; test compatibility before changing the client pin or server major version.
+The bundled native client is pinned to Jellyfin Web12.0. It uses the upstream Modern layout with native playback and watch-party controls. Server URLs are generic; test compatibility before changing the client pin or server major version.
 
 Jellyfin12 disables legacy authentication by default. The broker uses the supported `Authorization: MediaBrowser ...` header for password login, Quick Connect, authenticated API requests and WebSocket upgrades. Keep legacy authentication disabled.
 

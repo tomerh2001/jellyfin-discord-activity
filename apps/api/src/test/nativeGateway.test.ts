@@ -91,6 +91,7 @@ beforeEach(async () => {
     const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
     if (url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
     if (url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
+    if (url.pathname === "/Movies/Recommendations") return [{ RecommendationType: "BecauseYouWatched", BaselineItemName: "Test movie", Items: [{ ...homeItem, Type: "Movie", Path: "/private/media/movie.mkv", AccessToken: TOKEN }] }];
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
       activeItemChecks++;
@@ -410,6 +411,20 @@ describe("native Jellyfin gateway", () => {
     const before = calls.length;
     expect((await app.inject({ url: `${data.baseUrl}/LiveTv/Programs/Recommended` })).statusCode).toBe(403);
     expect((await app.inject({ url: `${data.baseUrl}/Users/another/Items/Resume` })).statusCode).toBe(403);
+    expect(calls).toHaveLength(before);
+  });
+
+  it("serves Modern movie suggestions for the selected user without exposing nested credentials or media paths", async () => {
+    const { data } = await launch();
+    const response = await app.inject({ url: `${data.baseUrl}/Movies/Recommendations?userId=another&ParentId=${ITEM}&CategoryLimit=3&ItemLimit=8&ApiKey=browser-token` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual([{ RecommendationType: "BecauseYouWatched", BaselineItemName: "Test movie", Items: [{ Id: ITEM, Type: "Movie", Path: "", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } }] }]);
+    expect(calls.at(-1)).toMatchObject({ method: "GET", path: "/Movies/Recommendations", query: { UserId: USER, ParentId: ITEM, CategoryLimit: "3", ItemLimit: "8" } });
+    expect(calls.at(-1)?.query).not.toHaveProperty("userId");
+    expect(calls.at(-1)?.query).not.toHaveProperty("ApiKey");
+    const before = calls.length;
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/Movies/Recommendations`, payload: {} })).statusCode).toBe(403);
+    expect((await app.inject({ url: `${data.baseUrl}/Movies/Recommendations/private` })).statusCode).toBe(403);
     expect(calls).toHaveLength(before);
   });
 

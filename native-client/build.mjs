@@ -9,6 +9,8 @@ import { patchVideoUnpause } from './videoPlaybackPatch.mjs';
 import { patchNativeIntegration } from './integrationPatch.mjs';
 import { patchNativeStartup } from './startupPatch.mjs';
 import { patchNativeSeekPreview } from './seekPreviewPatch.mjs';
+import { patchModernPresentation } from './presentationPatch.mjs';
+import { patchAccountView } from './accountPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -44,6 +46,8 @@ async function replace(relative, before, after) {
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
 await patchNativeIntegration(replace);
 await patchNativeStartup(replace);
+await patchModernPresentation(replace);
+await patchAccountView(replace);
 const seekController = path.join(source, 'src/apps/legacy/controllers/playback/video/index.js');
 await writeFile(seekController, patchNativeSeekPreview(await readFile(seekController, 'utf8')));
 await replace('webpack.common.js', "const NODE_MODULES_REGEX =", `// Pin build metadata to Jellyfin's source, not a containing checkout.\nCOMMIT_SHA = '${upstream.commit}';\nconst NODE_MODULES_REGEX =`);

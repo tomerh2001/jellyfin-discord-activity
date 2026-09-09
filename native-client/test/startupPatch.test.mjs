@@ -56,24 +56,38 @@ test('native React consumers receive the same packaged config without a fetch or
     assert.equal(result.children, 'native child');
 });
 
-test('Jellyfin 12 layout selection retains native legacy controls on desktop, mobile and automatic layouts', async () => {
-    const source = (await patchedSources()).get('src/components/layoutManager.js');
+test('Jellyfin 12 selects the responsive Modern app before routing and offers no legacy layout switch', async () => {
+    const files = await patchedSources();
+    const source = files.get('src/components/layoutManager.js');
     const modes = { Auto: 'auto', Desktop: 'desktop', DesktopLegacy: 'desktop-legacy', Modern: 'modern',
         Mobile: 'mobile', MobileLegacy: 'mobile-legacy', Tv: 'tv' };
     const browser = { mobile: false, tv: false };
-    const saved = new Map(); const classes = new Set();
+    const saved = new Map([['layout', modes.MobileLegacy]]); const classes = new Set();
     const code = source.replace(/^import .*;$/gm, '').replace('export const SETTING_KEY', 'const SETTING_KEY')
         .replace('export default layoutManager;', 'return layoutManager;');
     const manager = new Function('LayoutMode', 'browser', 'appHost', 'appSettings', 'Events', 'document', 'console', code)(
         modes, browser, { getDefaultLayout: () => modes.Desktop }, { get: key => saved.get(key), set: (key, value) => saved.set(key, value) },
         { trigger() {} }, { documentElement: { classList: { add: value => classes.add(value), remove: value => classes.delete(value) } } }, { debug() {} });
-    assert.equal(manager.modern, false); assert.equal(manager.desktop, true);
-    manager.setLayout(modes.Modern); assert.equal(manager.modern, false); assert.equal(saved.get('layout'), modes.DesktopLegacy);
-    browser.mobile = true; manager.setLayout(modes.Modern); assert.equal(manager.mobile, true); assert.equal(saved.get('layout'), modes.MobileLegacy);
-    manager.setLayout(modes.Mobile); assert.equal(manager.modern, false); assert.equal(saved.get('layout'), modes.MobileLegacy);
-    manager.setLayout(modes.Auto); assert.equal(manager.modern, false); assert.equal(manager.desktop, true);
-    manager.setLayout(modes.Tv); assert.equal(manager.modern, false); assert.equal(manager.tv, true);
-    assert.equal(classes.has('layout-tv'), true);
+    assert.equal(manager.modern, true); assert.equal(manager.desktop, true);
+    assert.equal(manager.mobile, false, 'stored legacy settings cannot change the application on desktop');
+    for (const mobile of [true, false]) {
+        browser.mobile = mobile;
+        for (const mode of Object.values(modes)) {
+            manager.setLayout(mode);
+            assert.equal(manager.modern, true);
+            assert.equal(manager.mobile, mobile);
+            assert.equal(manager.desktop, !mobile);
+            assert.equal(manager.tv, false);
+            assert.equal(saved.get('layout'), mobile ? modes.Mobile : modes.Desktop);
+            assert.equal(classes.has('layout-mobile'), mobile);
+            assert.equal(classes.has('layout-desktop'), !mobile);
+            assert.equal(classes.has('layout-tv'), false);
+        }
+    }
+    const display = files.get('src/apps/modern/features/preferences/components/DisplayPreferences.tsx');
+    assert.ok(!display.includes('LayoutMode'), 'the native settings page cannot offer a nonfunctional legacy/TV layout selector');
+    assert.ok(display.includes('values.theme'));
+    assert.ok(display.includes('values.disableCustomCss'));
 });
 
 test('native query data uses an in-memory provider and never initializes IndexedDB persistence', async () => {
