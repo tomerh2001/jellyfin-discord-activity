@@ -89,8 +89,10 @@ beforeEach(async () => {
       return reply.code(204).send();
     }
     const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
-    if (url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
-    if (url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
+    if (url.pathname === "/UserItems/Resume" || url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
+    if (url.pathname === "/Items/Latest" || url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
+    if (/^\/User(?:Favorite|Played)Items\//.test(url.pathname)) return { ...homeItem.UserData, AccessToken: TOKEN };
+    if (url.pathname === `/Items/${ITEM}/Collections`) return { Items: [{ Id: GROUP, Type: "BoxSet", Path: "/private/collection", AccessToken: TOKEN }] };
     if (url.pathname === "/Movies/Recommendations") return [{ RecommendationType: "BecauseYouWatched", BaselineItemName: "Test movie", Items: [{ ...homeItem, Type: "Movie", Path: "/private/media/movie.mkv", AccessToken: TOKEN }] }];
     const item = /^\/Users\/([^/]+)\/Items\/([^/]+)$/.exec(url.pathname);
     if (item) {
@@ -125,7 +127,7 @@ beforeEach(async () => {
     if (url.pathname.endsWith("/0.ts")) return reply.type("video/mp2t").send(Buffer.from("segment"));
     if (url.pathname === "/Sessions") return [{ Id: "other-session", DeviceId: "other" }, { Id: nativeSessionId({ deviceId: device(authorization) } as NativeViewer), NowPlayingItem: { Id: ITEM, Name: "Test movie" }, PlayState: { PositionTicks: 50_000_000, IsPaused: false } }];
     if (url.pathname.startsWith("/Sessions/")) return reply.code(204).send();
-    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true, EnableLiveTvAccess: true, EnableLiveTvManagement: true, EnableMediaPlayback: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
+    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true, EnableLiveTvAccess: true, EnableLiveTvManagement: true, EnableMediaPlayback: true, EnableContentDownloading: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
   } });
   upstreamAddress = await upstream.listen({ host: "127.0.0.1", port: 0 });
   const env = loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", JELLYFIN_DEFAULT_SERVER_URL: upstreamAddress, DATABASE_URL: "file:/tmp/native-unused.db" });
@@ -399,8 +401,8 @@ describe("native Jellyfin gateway", () => {
   it("reports supported Home capabilities and preserves personalized resume, next-up and latest rows", async () => {
     const { data } = await launch();
     const user = (await app.inject({ url: `${data.baseUrl}/Users/Me` })).json();
-    expect(user.Policy).toMatchObject({ EnableLiveTvAccess: false, EnableLiveTvManagement: false, EnableMediaPlayback: true });
-    for (const path of [`/Users/${USER}/Items/Resume`, "/Shows/NextUp", `/Users/${USER}/Items/Latest`]) {
+    expect(user.Policy).toMatchObject({ EnableLiveTvAccess: false, EnableLiveTvManagement: false, EnableMediaPlayback: true, EnableContentDownloading: false });
+    for (const path of ["/UserItems/Resume", "/Shows/NextUp", "/Items/Latest"]) {
       const response = await app.inject({ url: `${data.baseUrl}${path}?UserId=another&Limit=12&Fields=PrimaryImageAspectRatio` });
       expect(response.statusCode).toBe(200);
       const body = response.json();
@@ -412,6 +414,38 @@ describe("native Jellyfin gateway", () => {
     expect((await app.inject({ url: `${data.baseUrl}/LiveTv/Programs/Recommended` })).statusCode).toBe(403);
     expect((await app.inject({ url: `${data.baseUrl}/Users/another/Items/Resume` })).statusCode).toBe(403);
     expect(calls).toHaveLength(before);
+  });
+
+  it.each(["UserFavoriteItems", "UserPlayedItems"])("scopes Modern %s changes to visible items and the selected user", async (family) => {
+    const { data } = await launch();
+    for (const method of ["POST", "DELETE"] as const) {
+      const response = await app.inject({ method, url: `${data.baseUrl}/${family}/${ITEM}?userId=another&ApiKey=browser-token` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ Played: false, PlaybackPositionTicks: 90_000_000 });
+      expect(calls.at(-1)).toMatchObject({ method, path: `/${family}/${ITEM}`, query: { UserId: USER } });
+      expect(calls.at(-1)?.query).not.toHaveProperty("userId");
+      expect(calls.at(-1)?.query).not.toHaveProperty("ApiKey");
+      const before = calls.length;
+      expect((await app.inject({ method, url: `${data.baseUrl}/${family}/${DENIED}` })).statusCode).toBe(403);
+      expect(calls.slice(before).some((call) => call.path.startsWith(`/${family}/`))).toBe(false);
+    }
+    const before = calls.length;
+    expect((await app.inject({ url: `${data.baseUrl}/${family}/${ITEM}` })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/${family}/${ITEM}/extra` })).statusCode).toBe(403);
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/${family}/invalid-id` })).statusCode).toBe(403);
+    expect(calls).toHaveLength(before);
+  });
+
+  it("serves a visible item's Modern collection section with scoped identity and sanitized data", async () => {
+    const { data } = await launch();
+    const response = await app.inject({ url: `${data.baseUrl}/Items/${ITEM}/Collections?userId=another&Fields=PrimaryImageAspectRatio` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ Items: [{ Id: GROUP, Type: "BoxSet", Path: "" }] });
+    expect(calls.at(-1)).toMatchObject({ method: "GET", path: `/Items/${ITEM}/Collections`, query: { UserId: USER, Fields: "PrimaryImageAspectRatio" } });
+    const before = calls.length;
+    expect((await app.inject({ url: `${data.baseUrl}/Items/${DENIED}/Collections` })).statusCode).toBe(403);
+    expect(calls.slice(before).some((call) => call.path.endsWith("/Collections"))).toBe(false);
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/Items/${ITEM}/Collections`, payload: {} })).statusCode).toBe(403);
   });
 
   it("serves Modern movie suggestions for the selected user without exposing nested credentials or media paths", async () => {
