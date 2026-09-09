@@ -66,8 +66,12 @@ ${indent}}`);
         queryClient.clear();
         // Reset cached views
         viewContainer.reset();
-        appHost.supports(AppFeature.MultiServer) ?
-            navigate('selectserver') : navigate('login');
+
+        if (appHost.supports(AppFeature.MultiServer)) {
+            selectServer();
+        } else {
+            navigate('login');
+        }
     });
 }`,
         `export function logout() {
@@ -95,14 +99,14 @@ ${indent}}`);
 
     // Direct native links must use the broker too; helper-method interception
     // alone does not cover HashRouter navigation to login or server selection.
-    await replace('src/apps/stable/routes/routes.tsx',
+    await replace('src/apps/legacy/routes/routes.tsx',
         "import AppLayout from '../AppLayout';",
         "import AppLayout from '../AppLayout';\nimport NativeAccountsRoute, { ACCOUNT_ROUTE_PATHS } from 'discordActivity/accountsRoute';");
-    await replace('src/apps/stable/routes/routes.tsx',
+    await replace('src/apps/legacy/routes/routes.tsx',
         "            { index: true, element: <Navigate replace to='/home' /> },",
         "            { index: true, element: <Navigate replace to='/home' /> },\n            ...ACCOUNT_ROUTE_PATHS.map(path => ({ path, Component: NativeAccountsRoute })),");
     for (const [collection, mapper] of [['ASYNC_PUBLIC_ROUTES', 'toAsyncPageRoute'], ['LEGACY_PUBLIC_ROUTES', 'toViewManagerPageRoute']]) {
-        await replace('src/apps/stable/routes/routes.tsx',
+        await replace('src/apps/legacy/routes/routes.tsx',
             `...${collection}.map(${mapper})`,
             `...${collection}.filter(route => !ACCOUNT_ROUTE_PATHS.includes(route.path)).map(${mapper})`);
     }
@@ -119,11 +123,13 @@ ${indent}}`);
         '        location.pathname,\n        location.search',
         '        location.pathname,\n        location.search,\n        legacyApiClient');
 
+    await replace('src/lib/jellyfin-apiclient/ServerConnections.js',
+        "import { createApiClient } from 'utils/jellyfin-apiclient/createApiClient';",
+        "import { createApiClient } from 'utils/jellyfin-apiclient/createApiClient';\nimport { installNativeSocket } from 'discordActivity/nativeSocket';");
+    await replace('src/lib/jellyfin-apiclient/ServerConnections.js',
+        '            apiClient.subscribe = apiClient._sdk.subscribe.bind(apiClient._sdk);',
+        '            installNativeSocket(apiClient, Events, () => this.currentApiClient() === apiClient);');
     await replace('src/scripts/serverNotifications.js',
-        'function onMessageReceived(e, msg) {\n    const apiClient = this;',
-        `function onMessageReceived(e, msg) {
-    // A replaced same-server client may have a final queued WebSocket message.
-    // Only the current object can affect this account's native player and UI.
-    if (this !== ServerConnections.currentApiClient()) return;
-    const apiClient = this;`);
+        '    return () => subscriptions.get(apiClient.serverId()).forEach((unsub) => {',
+        '    return () => subscriptions.forEach((unsub) => {');
 }

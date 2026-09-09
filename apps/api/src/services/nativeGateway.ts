@@ -23,7 +23,7 @@ const readRules = [
   /^\/Branding\/Configuration$/i,
   /^\/Localization\/(?:Cultures|Countries|ParentalRatings|Options)$/i,
   /^\/Items(?:\/(?:Filters|Filters2|Counts|Root))?$/i,
-  new RegExp(`^/Items/${ID}(?:/(?:Ancestors|Similar|CriticReviews|ThemeMedia|ThemeSongs|ThemeVideos|PlaybackInfo|Chapters))?$`, "i"),
+  new RegExp(`^/Items/${ID}(?:/(?:Ancestors|Similar|ThemeMedia|ThemeSongs|ThemeVideos|PlaybackInfo|Chapters))?$`, "i"),
   new RegExp(`^/(?:Items|Persons|Artists|Studios|Genres|MusicGenres|Users)/${ID}/Images/[a-z]+(?:/\\d+)?$`, "i"),
   /^\/(?:Genres|MusicGenres|Artists|Artists\/AlbumArtists|Persons|Studios|Years)$/i,
   /^\/Search\/Hints$/i,

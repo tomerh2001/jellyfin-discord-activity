@@ -1,13 +1,20 @@
 # Native Jellyfin client
 
-`node native-client/build.mjs` builds the actual Jellyfin Web 10.11.11 client.
-Use Node22 with its npm10 and `tar`; no global npm installation is required.
+`node native-client/build.mjs` builds the actual Jellyfin Web 12.0.0 client.
+Use Node24 with npm11 or newer and `tar`; no global npm installation is required.
 The source commit, archive SHA256 and license are pinned in `upstream.json`.
 The upstream npm lockfile supplies dependency integrity. Output goes to `dist/`
 and the Activity API serves its `index.html` at the mapped origin's root.
 The native HashRouter owns navigation within the Activity document.
 
 The build applies a small integration patch before compiling the upstream source:
+
+- Jellyfin 12's upstream **legacy** application supplies the native desktop and
+  mobile controls already integrated with the Activity. Layout selection maps
+  desktop/mobile/modern choices to the corresponding upstream legacy layout and
+  keeps automatic selection within that application. This is the current
+  Jellyfin 12 client, with no iframe or separate playback interface. The upstream
+  modern application is not enabled by this integration.
 
 - The native document loads the [session library](../apps/activity-web/README.md)
   once, before the adapter initializes. That library supplies Discord SDK
@@ -38,6 +45,15 @@ The build applies a small integration patch before compiling the upstream source
   on HTTPS. The optional CacheStorage response cache is disabled before its
   constructor runs. Browser preferences last for the current Activity document;
   saved server accounts remain on the broker.
+  Jellyfin 12's IndexedDB query persistence is also removed: the native root uses
+  an in-memory QueryClientProvider, and its query module has no IndexedDB
+  persister. Account replacement clears that document's query cache.
+- Jellyfin 12's SDK subscriptions own one WebSocket per native ApiClient. The
+  adapter bridges its status to the legacy player lifecycle methods used by
+  SyncPlay and the Activity, without opening a second connection. Identical
+  authentication metadata does not reconnect an unchanged capability. SDK and
+  legacy subscribers share account ownership checks; unsubscribe, client close
+  and replacement suppress late callbacks, and close disables SDK reconnection.
 - Native SyncPlay joins the Activity's mapped group after the WebSocket opens.
   Reconnection joins that same group. A socket outage lasting 40 seconds asks the
   document's controller for a fresh gateway launch, since disconnected
@@ -95,7 +111,7 @@ The build applies a small integration patch before compiling the upstream source
   the same user, connection, server and guild/channel, with no connected viewers.
   Old capabilities are revoked. Explicit Leave or account removal invalidates
   restoration. The Activity cannot suppress Discord's own refresh prompt.
-- [HLS.js](https://github.com/video-dev/hls.js) 1.6.13 uses its lockfile-pinned
+- [HLS.js](https://github.com/video-dev/hls.js) 1.6.16 uses its lockfile-pinned
   standalone worker asset. Rebundling the default
   stringified worker factory can leave a webpack module reference outside its
   scope (`ReferenceError: e is not defined`) and silently fall back to main-thread

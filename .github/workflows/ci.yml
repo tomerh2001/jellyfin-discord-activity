@@ -15,11 +15,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: node native-client/build.mjs
-      - uses: actions/setup-node@v4
-        with:
           node-version: 24
+      - run: node native-client/build.mjs
       - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - run: node --test native-client/test/*.test.mjs

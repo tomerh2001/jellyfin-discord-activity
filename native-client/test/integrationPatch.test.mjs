@@ -6,6 +6,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { patchNativeIntegration } from '../integrationPatch.mjs';
+import { installNativeSocket } from '../src/nativeSocket.js';
 
 const require = createRequire(import.meta.url);
 const ts = require('typescript');
@@ -74,10 +75,10 @@ test('same-route native view reloads for a replacement ApiClient, including anot
         if (name === 'react-router-dom') return { useLocation: () => ({ pathname: '/home', search: '', state: null }), useNavigationType: () => 'PUSH' };
         if (name === 'hooks/useApi') return { useApi: () => ({ __legacyApiClient__: client }) };
         if (name === 'history') return { Action: { Pop: 'POP' } };
-        if (name === 'constants/appType') return { AppType: { Stable: 'stable', Dashboard: 'dashboard', Wizard: 'wizard' } };
+        if (name === 'constants/appType') return { AppType: { Legacy: 'legacy', Dashboard: 'dashboard', Wizard: 'wizard' } };
         if (name === 'lib/globalize') return { default: { translateHtml: html => html } };
         if (name === './viewManager') return { default: { loadView: options => loads.push(options) } };
-        if (name.startsWith('../../controllers/')) return { default: 'native fixture' };
+        if (name.startsWith('../../apps/legacy/controllers/')) return { default: 'native fixture' };
         throw new Error(`Unexpected test import: ${name}`);
     } });
     const render = () => exports.default({ controller: 'home', view: 'home.html' });
@@ -91,30 +92,35 @@ test('same-route native view reloads for a replacement ApiClient, including anot
     assert.equal(loads[1].url, '/home');
 });
 
-test('replaced-client WebSocket messages cannot affect the current native party', async () => {
+test('Jellyfin 12 notification subscriptions ignore replaced clients and clean up their actual handlers', async () => {
     const files = await patchedUpstream();
-    const body = files.get('src/scripts/serverNotifications.js').match(/function onMessageReceived\(e, msg\) \{([\s\S]*?)\n\}/)[1];
-    const current = { serverId: () => 'same-server' };
-    const old = { serverId: () => 'same-server' };
-    const received = [];
-    let pluginReads = 0;
-    const handler = new Function('ServerConnections', 'pluginManager', 'PluginType', `return function(e, msg) {${body}\n}`)(
-        { currentApiClient: () => current },
-        { firstOfType() { pluginReads++; return { instance: { Manager: {
-            processCommand: (data, client) => received.push(['command', data, client]),
-            processGroupUpdate: (data, client) => received.push(['group', data, client])
-        } } }; } }, { SyncPlay: 'syncplay' });
-    handler.call(old, {}, { MessageType: 'SyncPlayGroupUpdate', Data: 'old-join' });
-    handler.call(old, {}, { MessageType: 'SyncPlayCommand', Data: 'old-play' });
-    assert.equal(pluginReads, 0);
-    assert.equal(received.length, 0);
-    handler.call(current, {}, { MessageType: 'SyncPlayGroupUpdate', Data: 'current-join' });
-    assert.deepEqual(received, [['group', 'current-join', current]]);
+    const connection = files.get('src/lib/jellyfin-apiclient/ServerConnections.js');
+    assert.ok(connection.includes('installNativeSocket(apiClient, Events, () => this.currentApiClient() === apiClient)'));
+    const source = files.get('src/scripts/serverNotifications.js');
+    const body = source.match(/function subscribeToApiClient\(apiClient\) \{([\s\S]*?)\n\}/)[1];
+    const received = []; const handlers = new Map(); let current = true;
+    const socket = { onStatusChange: () => () => {}, disconnect() {} };
+    const client = { _sdk: { webSocket: socket, update() {}, subscribe(types, callback) {
+        for (const type of types) handlers.set(type, callback);
+        return () => { for (const type of types) handlers.delete(type); };
+    } } };
+    installNativeSocket(client, { trigger() {} }, () => current);
+    const types = Object.fromEntries(['Play', 'Playstate', 'GeneralCommand', 'SyncPlayCommand', 'SyncPlayGroupUpdate'].map(value => [value, value]));
+    const invoke = new Function('apiClient', 'OutboundWebSocketMessageType', 'pluginManager', 'PluginType', 'Events', 'serverNotifications', 'onPlay', 'onPlaystate', 'processGeneralCommand', body);
+    const cleanup = invoke(client, types, { firstOfType: () => ({ instance: { Manager: {
+        processCommand: value => received.push(value), processGroupUpdate: value => received.push(value)
+    } } }) }, { SyncPlay: 'syncplay' }, { trigger() {} }, {}, assert.fail, assert.fail, assert.fail);
+    const oldCallback = handlers.get('SyncPlayCommand');
+    oldCallback({ Data: 'current-play' }); assert.deepEqual(received, ['current-play']);
+    current = false; oldCallback({ Data: 'old-play' }); assert.deepEqual(received, ['current-play']);
+    cleanup(); assert.equal(handlers.size, 0);
+    current = true; oldCallback({ Data: 'unsubscribed-play' }); assert.deepEqual(received, ['current-play']);
+    client.closeWebSocket();
 });
 
 test('direct account routes use a lazy native dialog and return Home without reloading the document', async () => {
     const files = await patchedUpstream();
-    const routes = files.get('src/apps/stable/routes/routes.tsx');
+    const routes = files.get('src/apps/legacy/routes/routes.tsx');
     assert.ok(routes.indexOf('...ACCOUNT_ROUTE_PATHS.map') < routes.indexOf('/* User routes */'), 'broker account routes must bypass ConnectionRequired bounce');
     for (const collection of ['ASYNC_PUBLIC_ROUTES', 'LEGACY_PUBLIC_ROUTES']) {
         assert.ok(routes.includes(`${collection}.filter(route => !ACCOUNT_ROUTE_PATHS.includes(route.path))`));

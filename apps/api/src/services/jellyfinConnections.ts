@@ -190,7 +190,7 @@ export async function connectWithPassword(env: AppEnv, session: AppSession,
   const server = await identifyServer(target); // Never send a password before validating destination and identity.
   const deviceId = `jellyfin-watch-login-${generateId()}`;
   const response = await upstreamFetch(target, "/Users/AuthenticateByName", {
-    method: "POST", headers: { "Content-Type": "application/json", "X-Emby-Authorization": jellyfinClientHeader(deviceId) },
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: jellyfinClientHeader(deviceId) },
     body: JSON.stringify({ Username: input.username, Pw: input.password }), signal: AbortSignal.timeout(15_000)
   });
   return saveAuthentication(env, session, target, server, deviceId, response, kind);
@@ -318,7 +318,7 @@ export class QuickConnectManager {
     const server = await identifyServer(target);
     const deviceId = `jellyfin-watch-login-${generateId()}`;
     const response = await upstreamFetch(target, "/QuickConnect/Initiate", { method: "POST", signal: AbortSignal.timeout(10_000),
-      headers: { "X-Emby-Authorization": jellyfinClientHeader(deviceId) } });
+      headers: { Authorization: jellyfinClientHeader(deviceId) } });
     if (!response.ok) { await response.body?.cancel(); throw new ConnectionError("quick_connect_unavailable", "Quick Connect is not available on this server.", 409); }
     const parsed = z.object({ Secret: z.string().min(1).max(4096), Code: z.string().regex(/^\d{4,10}$/) }).safeParse(await readUpstreamJson(response));
     if (!parsed.success) throw new ConnectionError("quick_connect_unavailable", "The server returned invalid Quick Connect data.", 502);
@@ -357,7 +357,7 @@ export class QuickConnectManager {
     if (identity.Id !== request.server.Id) throw new ConnectionError("jellyfin_identity_changed", "The Jellyfin server identity changed.", 409);
     requireCurrent();
     const response = await upstreamFetch(target, `/QuickConnect/Connect?Secret=${encodeURIComponent(request.secret)}`, {
-      headers: { "X-Emby-Authorization": jellyfinClientHeader(request.deviceId) }, signal: AbortSignal.timeout(10_000)
+      headers: { Authorization: jellyfinClientHeader(request.deviceId) }, signal: AbortSignal.timeout(10_000)
     });
     if (!response.ok) { await response.body?.cancel(); throw new ConnectionError("quick_connect_expired", "Quick Connect expired. Start again.", 410); }
     const state = z.object({ Authenticated: z.boolean() }).safeParse(await readUpstreamJson(response));
@@ -365,7 +365,7 @@ export class QuickConnectManager {
     if (!state.data.Authenticated) return { status: "pending" };
     requireCurrent();
     const authenticated = await upstreamFetch(target, "/Users/AuthenticateWithQuickConnect", {
-      method: "POST", headers: { "Content-Type": "application/json", "X-Emby-Authorization": jellyfinClientHeader(request.deviceId) },
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: jellyfinClientHeader(request.deviceId) },
       body: JSON.stringify({ Secret: request.secret }), signal: AbortSignal.timeout(15_000)
     });
     const connection = await saveAuthentication(this.env, session, target, request.server, request.deviceId, authenticated, "personal", requireCurrent);

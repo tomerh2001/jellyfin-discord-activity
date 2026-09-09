@@ -82,13 +82,13 @@ async function installLaunch(next, connection, isCurrent) {
         Id: next.serverId, UserId: next.userId, AccessToken: next.accessToken,
         ManualAddress: address, manualAddressOnly: true, LastConnectionMode: 2
     };
-    apiClient = new ApiClient(address, 'Jellyfin Watch', '10.11.11', 'Discord Activity', deviceId);
+    apiClient = new ApiClient(address, 'Jellyfin Watch', '12.0.0', 'Discord Activity', deviceId);
     apiClient.enableAutomaticNetworking = false;
     apiClient.manualAddressOnly = true;
     apiClient.serverInfo(server);
     apiClient.setAuthenticationInfo(next.accessToken, next.userId);
-    ServerConnections.setLocalApiClient(apiClient);
     ServerConnections.addApiClient(apiClient);
+    ServerConnections.setLocalApiClient(apiClient);
     const result = await ServerConnections.connectToServer(server, {
         enableAutoLogin: true, enableWebSocket: false, reportCapabilities: false,
         enableAutomaticBitrateDetection: false

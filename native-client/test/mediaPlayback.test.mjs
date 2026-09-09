@@ -4,7 +4,7 @@ import { patchVideoUnpause } from '../videoPlaybackPatch.mjs';
 import { playWithGestureRecovery } from '../src/mediaPlayback.js';
 import { PLAYBACK_BLOCKED_EVENT } from '../src/playbackPermission.js';
 
-// The unmodified method from pinned Jellyfin Web 10.11.11. The release build
+// The unmodified method from pinned Jellyfin Web 12.0.0. The release build
 // requires this exact method/import anchor in the verified upstream archive.
 const upstreamMethod = `import Screenfull from 'screenfull';
 class Player {
