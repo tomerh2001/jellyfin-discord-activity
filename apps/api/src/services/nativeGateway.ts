@@ -22,8 +22,9 @@ const readRules = [
   /^\/(?:UserViews|GetUTCTime)$/i,
   /^\/Branding\/Configuration$/i,
   /^\/Localization\/(?:Cultures|Countries|ParentalRatings|Options)$/i,
-  /^\/Items(?:\/(?:Filters|Filters2|Counts|Root))?$/i,
-  new RegExp(`^/Items/${ID}(?:/(?:Ancestors|Similar|ThemeMedia|ThemeSongs|ThemeVideos|PlaybackInfo|Chapters))?$`, "i"),
+  /^\/Items(?:\/(?:Filters|Filters2|Counts|Root|Latest))?$/i,
+  /^\/UserItems\/Resume$/i,
+  new RegExp(`^/Items/${ID}(?:/(?:Ancestors|Similar|Collections|ThemeMedia|ThemeSongs|ThemeVideos|PlaybackInfo|Chapters))?$`, "i"),
   new RegExp(`^/(?:Items|Persons|Artists|Studios|Genres|MusicGenres|Users)/${ID}/Images/[a-z]+(?:/\\d+)?$`, "i"),
   /^\/(?:Genres|MusicGenres|Artists|Artists\/AlbumArtists|Persons|Studios|Years)$/i,
   /^\/Search\/Hints$/i,
@@ -70,6 +71,7 @@ export function allowNativeRequest(viewer: NativeViewer, method: string, inputPa
     if (new RegExp(`^/DisplayPreferences/${ID}$`, "i").test(path)) return path;
     if (new RegExp(`^/Users/${ID}/(?:Configuration|PlayedItems/${ID}|FavoriteItems/${ID})$`, "i").test(path)) return path;
   }
+  if ((method === "POST" || method === "DELETE") && /^\/User(?:Favorite|Played)Items\/[a-f0-9-]{32,36}$/i.test(path)) return path;
   if (method === "DELETE" && (new RegExp(`^/Users/${ID}/(?:PlayedItems|FavoriteItems)/${ID}$`, "i").test(path) || /^\/Videos\/ActiveEncodings$/i.test(path))) return path;
   throw new NativeError("native_route_denied");
 }
@@ -163,6 +165,9 @@ export function sanitizeNativeJson(viewer: NativeViewer, value: unknown, key = "
     if ("IsAdministrator" in result) result.IsAdministrator = false;
     if ("EnableRemoteAccess" in result) result.EnableRemoteAccess = false;
     if ("EnableContentDeletion" in result) result.EnableContentDeletion = false;
+    // Hide native file-download controls: this gateway exposes streaming
+    // playback, not Jellyfin's file-download routes.
+    if ("EnableContentDownloading" in result) result.EnableContentDownloading = false;
     // This gateway supports library playback, not Live TV. Advertising Live TV
     // makes native Home await a denied optional request before loading any rows.
     if ("EnableLiveTvAccess" in result) result.EnableLiveTvAccess = false;
@@ -199,7 +204,7 @@ async function readBounded(response: Response, limit: number, signal: AbortSigna
 
 export async function proxyNativeRequest(service: NativePartyService, viewer: NativeViewer, request: FastifyRequest, reply: FastifyReply, path: string, query: URLSearchParams): Promise<FastifyReply> {
   allowNativeRequest(viewer, request.method, path);
-  const itemMatch = /^\/(?:Items|Videos|Audio|MediaSegments|Persons|Artists|Studios|Genres|MusicGenres)\/([a-f0-9-]{32,36})(?:\/|$)/i.exec(path)
+  const itemMatch = /^\/(?:Items|Videos|Audio|MediaSegments|Persons|Artists|Studios|Genres|MusicGenres|UserFavoriteItems|UserPlayedItems)\/([a-f0-9-]{32,36})(?:\/|$)/i.exec(path)
     ?? /^\/Users\/[^/]+\/(?:Items|PlayedItems|FavoriteItems)\/([a-f0-9-]{32,36})(?:\/|$)/i.exec(path);
   if (itemMatch) {
     const bodySource = Object.entries(record(request.body)).find(([key]) => key.toLowerCase() === "mediasourceid")?.[1];
