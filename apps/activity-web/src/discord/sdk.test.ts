@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { PublicEnv } from "../api/types.js";
 
-const fixture = vi.hoisted(() => ({ constructed: vi.fn(), ready: vi.fn(), close: vi.fn() }));
+const fixture = vi.hoisted(() => ({ constructed: vi.fn(), ready: vi.fn(), close: vi.fn(), authorize: vi.fn(), authenticate: vi.fn() }));
 vi.mock("@discord/embedded-app-sdk", () => ({
   DiscordSDK: class {
     instanceId = "instance"; guildId = "guild"; channelId = "channel";
     constructor() { fixture.constructed(); }
     ready = fixture.ready; close = fixture.close;
+    commands = { authorize: fixture.authorize, authenticate: fixture.authenticate };
   },
   RPCCloseCodes: { CLOSE_NORMAL: 1000 }
 }));
@@ -32,4 +33,19 @@ it("shares one pending SDK handshake and reuses its authenticated document conne
   fixture.ready.mockResolvedValue(undefined);
   expect((await initializeDiscord(config)).sdk).not.toBe(left.sdk);
   expect(fixture.constructed).toHaveBeenCalledTimes(2);
+});
+
+it("requests presence once through normal authorization and retains only its verified scope and public app artwork", async () => {
+  fixture.ready.mockResolvedValue(undefined);
+  fixture.authorize.mockResolvedValue({ code: "oauth-code" });
+  fixture.authenticate.mockResolvedValue({ user: { id: "viewer", username: "Viewer" }, scopes: ["identify", "rpc.activities.write"],
+    access_token: "must-not-copy", application: { id: "123", icon: "public-icon", name: "App", rpc_origins: ["private-origin"] } });
+  const { initializeDiscord, authorizeDiscord, authenticateDiscord } = await import("./sdk.js");
+  const context = await initializeDiscord(config);
+  await authorizeDiscord(context, config);
+  expect(fixture.authorize).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ scope: ["identify", "rpc.activities.write"], prompt: "none" }));
+  await authenticateDiscord(context, "oauth-token");
+  expect(context.grantedScopes).toEqual(["identify", "rpc.activities.write"]);
+  expect(context.application).toEqual({ id: "123", icon: "public-icon" });
+  expect(JSON.stringify(context)).not.toMatch(/must-not-copy|private-origin|oauth-token/);
 });

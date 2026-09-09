@@ -125,6 +125,28 @@ party → Invite friends** explicitly opens Discord's invitation dialog. A launc
 in another text channel belongs to that channel; friends must join the same
 running Activity to share its SyncPlay group.
 
+Discord Rich Presence follows actual local playback, using the native player
+metadata without extra Jellyfin requests. Episodes show the series, season,
+episode number or range, and episode title; movies show their title and year.
+Playing media supplies a progress interval, adjusted for seeking and playback
+speed and native transcoding offsets. Paused/buffering media shows its position without a moving clock. Stop,
+account replacement and session recovery clear the previous title. Local media
+events must establish playback before a preparatory manager event can publish it.
+The manager event may also follow the DOM `playing` event or a failed play
+attempt. A 15-second local read refreshes metadata without a network request.
+
+Normal Activity authorization requests `identify` and `rpc.activities.write`.
+Presence uses the granted scopes in Discord's authenticated response; denied or
+unsupported presence never blocks the player or triggers another authorization
+flow. The publisher coalesces changes with at least five seconds between RPCs,
+keeps a stable playback clock, and shares its transport across account changes.
+Only human-readable media metadata and public Discord application artwork are
+published. Jellyfin tokens, server addresses, protected artwork, item identifiers
+and custom join secrets never enter the presence payload. Discord owns invitations
+and card rendering; its fixed application name remains **Jellyfin Watch**, and
+compact cards may omit the richer fields. See [Discord's Activity Rich Presence
+guide](https://docs.discord.com/developers/rich-presence/using-with-the-embedded-app-sdk).
+
 For browser diagnostics, never print native network logs or raw gateway paths:
 the `/jf/` path segment is a credential. A local HTTP smoke harness should load
 an actual response from the candidate origin. Intercepting the top-level
@@ -139,6 +161,27 @@ only WebSockets. Playwright HTTP routing disables the browser cache, so a routed
 fixture cannot establish warm-cache behavior. Keep real compiled SDK code with
 explicitly modeled parent RPC delays; report those delays and distinguish
 synthetic Home/player timings from actual Discord or Jellyfin transcoding.
+
+Seek previews keep Jellyfin's native slider, thumbnail crop, chapter label and
+timestamp. The adapter preloads the current trickplay sheet when playback
+metadata arrives and keeps at most two decoded image nodes for the current
+item, media source and gateway capability. The loaded node becomes the native
+preview, avoiding a second request for an uncached sheet. Until decoding succeeds,
+the normal timestamp stays visible. Failed or timed-out images can retry on a
+later hover after two seconds; there is no background retry loop. A changed
+player, account or capability clears images and rejects late completions.
+The final thumbnail index is clamped to `ThumbnailCount - 1`, including a seek
+rounded to the video's duration. Chapter-only previews still use the upstream
+renderer. The gateway path supplies authentication; image URLs retain
+`MediaSourceId` and omit the redundant `ApiKey` query parameter.
+
+A metadata request with `Fields=Chapters,Trickplay` is not a sprite request:
+look specifically for `/Videos/{id}/Trickplay/{width}/{sheet}.jpg` when debugging.
+HTTP 200 and a JPEG signature alone do not establish browser rendering; verify
+decoded dimensions, native crop coordinates and visible pixels. These changes
+address loading/error behavior and the reproducible final-frame boundary. They
+do not establish the cause of a missing thumbnail that cannot be reproduced in
+the real Discord renderer.
 
 Jellyfin Web is GPL-2.0-or-later. The compiled output includes its license and
 source metadata; this repository includes all modifications and the repeatable

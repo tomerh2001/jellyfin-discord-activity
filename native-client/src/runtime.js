@@ -12,6 +12,7 @@ import toast from 'components/toast/toast';
 import { observeMediaPlaying } from './mediaEvents';
 import { installPlaybackPermission } from './playbackPermission';
 import { observeQueueFailures } from './queueErrors';
+import { observeWatchPresence } from './watchPresence';
 import { applyPresentation, observeVideoPresentation } from './presentation';
 import { onDocumentExit } from './lifecycle';
 import { observeNavigation, restoredNavigation } from './navigation';
@@ -30,6 +31,7 @@ let reconnectTimer;
 let pollTimer;
 let accountDialog;
 let stopClient = () => {};
+let clearPresence = () => {};
 let videoPresentation;
 let navigation;
 let status = 'Choose something to watch';
@@ -193,10 +195,18 @@ async function joinParty() {
 
 function watchClient() {
     const client = apiClient;
+    const discord = controller.session.discord;
+    const presence = observeWatchPresence({ document, playbackManager, events: Events,
+        publisher: broker.createWatchPresence(discord),
+        isCurrent: () => !closed && !switching && apiClient === client && controller.session.discord === discord
+            && !controller.needsLaunch && client.isWebSocketOpen()
+            && Date.parse(controller.session.exchange.expiresAt) > Date.now() });
+    clearPresence = presence.clear;
     const stopQueue = observeQueueFailures(Events, client, launch.baseUrl, window.location.origin, reportError);
-    const opened = () => { clearTimeout(reconnectTimer); void joinParty(); };
+    const opened = () => { clearTimeout(reconnectTimer); presence.refresh(); void joinParty(); };
     const disconnected = () => {
         if (switching || closed) return;
+        presence.clear();
         status = 'Reconnecting';
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
@@ -211,6 +221,8 @@ function watchClient() {
     Events.on(client, 'websocketopen', opened);
     Events.on(client, 'websocketclose', disconnected);
     stopClient = () => {
+        presence.dispose();
+        clearPresence = () => {};
         stopQueue();
         Events.off(client, 'websocketopen', opened);
         Events.off(client, 'websocketclose', disconnected);
@@ -244,7 +256,7 @@ export async function finishDiscordBootstrap() {
                 void openAccounts(false, true, false);
             } else if (controller.needsLaunch && controller.selection) await controller.select(controller.selection);
         } catch (error) {
-            if (error?.recoveryRequired) void openAccounts(false, false, false);
+            if (error?.recoveryRequired) { clearPresence(); void openAccounts(false, false, false); }
             // A temporary broker outage must not stop working playback.
         }
         finally { polling = false; }

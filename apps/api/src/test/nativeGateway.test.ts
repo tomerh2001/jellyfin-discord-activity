@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import Fastify, { type FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import { SignJWT } from "jose";
@@ -21,6 +22,8 @@ const USER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const GROUP = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PLAYLIST_ITEM = "cccccccccccccccccccccccccccccccc";
 const TOKEN = "test-upstream-token-never-browser";
+// Generated four-color 2x2 JPEG sheet; no real library media or credentials.
+const SEEK_JPEG = readFileSync(new URL("./fixtures/trickplay.jpg", import.meta.url));
 type Call = { method: string; path: string; query: Record<string, string>; body: unknown; authorization: string };
 let app: FastifyInstance;
 let upstream: FastifyInstance;
@@ -91,6 +94,11 @@ beforeEach(async () => {
     if (url.pathname === `/Shows/${GROUP}/Episodes`) return { Items: [{ Id: ITEM }, { Id: PLAYLIST_ITEM }] };
     if (url.pathname.endsWith("/PlaybackInfo")) return { AccessToken: TOKEN, MediaSources: [{ Id: ITEM, TranscodingUrl: `Videos/${ITEM}/master.m3u8?api_key=${TOKEN}`, Path: "/private/file.mkv" }] };
     if (url.pathname.endsWith("/Images/Primary")) return reply.type(imageContentType).send("<svg><script>bad()</script></svg>");
+    if (/\/Trickplay\/16\/\d+\.jpg$/.test(url.pathname)) {
+      if (!url.pathname.endsWith("/0.jpg")) return reply.code(404).send({ privateDetail: TOKEN });
+      return reply.type("image/jpeg").send(SEEK_JPEG);
+    }
+    if (url.pathname.endsWith("/Images/Chapter/0")) return reply.type("image/jpeg").send(SEEK_JPEG);
     if (largePlaylist && url.pathname.endsWith("main.m3u8")) return reply.type("application/vnd.apple.mpegurl").send(
       "#EXTM3U\n" + Array.from({ length: 2200 }, (_, i) => `#EXTINF:3,\nhls1/main/${i}.ts?NativeProfile=${"x".repeat(1100)}&api_key=${TOKEN}\n`).join("")
     );
@@ -448,6 +456,48 @@ describe("native Jellyfin gateway", () => {
     expect(output).toContain(`/Videos/${ITEM}/Trickplay/320/tiles.m3u8`);
     expect(allowNativeRequest(viewer, "GET", `/Videos/${ITEM}/Trickplay/320/0.jpg`)).toContain("Trickplay");
     expect(() => allowNativeRequest(viewer, "GET", `/Videos/${ITEM}/Trickplay/../private`)).toThrow();
+  });
+
+  it.each([`Videos/${ITEM}/Trickplay/16/0.jpg?MediaSourceId=${ITEM}`, `Items/${ITEM}/Images/Chapter/0?tag=synthetic`])(
+    "streams the native seek image bytes through the authenticated gateway: %s", async (path) => {
+      const { data } = await launch();
+      const response = await app.inject({ url: `${data.baseUrl}/${path}&ApiKey=browser-capability`, headers: { "accept-encoding": "gzip, br" } });
+      expect(response.statusCode).toBe(200);
+      expect(response.rawPayload).toEqual(SEEK_JPEG);
+      expect(response.headers["content-type"]).toBe("image/jpeg");
+      expect(response.headers["content-length"]).toBe(String(SEEK_JPEG.length));
+      expect(response.headers["content-encoding"]).toBeUndefined();
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["x-content-type-options"]).toBe("nosniff");
+      expect(response.headers["content-security-policy"]).toContain("sandbox");
+      const forwarded = calls.find((call) => call.path === `/${path.split("?")[0]}`)!;
+      expect(forwarded.authorization).toContain(TOKEN);
+      expect(forwarded.query).not.toHaveProperty("ApiKey");
+      expect(forwarded.query.UserId).toBe(USER);
+      if (path.includes("Trickplay")) expect(forwarded.query.MediaSourceId).toBe(ITEM);
+    }
+  );
+
+  it("denies inaccessible seek images and foreign media sources before fetching bytes", async () => {
+    const { data } = await launch();
+    for (const path of [
+      `Videos/${DENIED}/Trickplay/16/0.jpg?MediaSourceId=${DENIED}`,
+      `Videos/${ITEM}/Trickplay/16/0.jpg?MediaSourceId=${DENIED}`,
+      `Items/${DENIED}/Images/Chapter/0`
+    ]) expect((await app.inject({ url: `${data.baseUrl}/${path}` })).statusCode).toBe(403);
+    expect(calls.some((call) => call.path.includes("/Trickplay/") || call.path.includes("/Images/Chapter/"))).toBe(false);
+  });
+
+  it("returns a bounded safe failure for missing thumbnails and rejects expired capabilities", async () => {
+    const { data, viewer } = await launch();
+    const response = await app.inject({ url: `${data.baseUrl}/Videos/${ITEM}/Trickplay/16/1.jpg?MediaSourceId=${ITEM}` });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error.code).toBe("jellyfin_request_failed");
+    expect(response.body).not.toContain(TOKEN);
+    await service.revoke(viewer);
+    calls.length = 0;
+    expect((await app.inject({ url: `${data.baseUrl}/Videos/${ITEM}/Trickplay/16/0.jpg?MediaSourceId=${ITEM}` })).statusCode).toBe(401);
+    expect(calls.some((call) => call.path.includes("/Trickplay/"))).toBe(false);
   });
 
   it("streams a feature-length native VOD playlist above the old 2MiB limit", async () => {

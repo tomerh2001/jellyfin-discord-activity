@@ -8,6 +8,7 @@ import { precompress } from './precompress.mjs';
 import { patchVideoUnpause } from './videoPlaybackPatch.mjs';
 import { patchNativeIntegration } from './integrationPatch.mjs';
 import { patchNativeStartup } from './startupPatch.mjs';
+import { patchNativeSeekPreview } from './seekPreviewPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -43,6 +44,8 @@ async function replace(relative, before, after) {
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
 await patchNativeIntegration(replace);
 await patchNativeStartup(replace);
+const seekController = path.join(source, 'src/controllers/playback/video/index.js');
+await writeFile(seekController, patchNativeSeekPreview(await readFile(seekController, 'utf8')));
 await replace('webpack.common.js', "const NODE_MODULES_REGEX =", `// Pin build metadata to Jellyfin's source, not a containing checkout.\nCOMMIT_SHA = '${upstream.commit}';\nconst NODE_MODULES_REGEX =`);
 await replace('src/index.jsx', "import RootApp from './RootApp';", "import RootApp from './RootApp';\nimport { bootstrapDiscord, finishDiscordBootstrap, failDiscordBootstrap } from './discordActivity/runtime';");
 await replace('src/index.jsx', `    // Initialize the api client

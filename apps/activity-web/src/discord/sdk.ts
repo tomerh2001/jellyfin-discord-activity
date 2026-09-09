@@ -15,6 +15,8 @@ export type ActivityDiscordContext = {
   };
   isMock: boolean;
   isStandalone?: boolean;
+  grantedScopes?: readonly string[];
+  application?: { id: string; icon?: string | null };
   sdk?: DiscordSDK;
 };
 
@@ -100,7 +102,7 @@ export async function authorizeDiscord(context: ActivityDiscordContext, config: 
     response_type: "code",
     state: context.instanceId,
     prompt: "none",
-    scope: ["identify"]
+    scope: ["identify", "rpc.activities.write"]
   });
 
   return { code };
@@ -118,6 +120,11 @@ export async function authenticateDiscord(context: ActivityDiscordContext, disco
   if (!auth) {
     throw new Error("Discord authenticate command failed.");
   }
+
+  // Keep only the public application metadata needed for Rich Presence artwork.
+  // Permission comes from this authenticated response, never from a URL flag.
+  context.grantedScopes = auth.scopes.filter(scope => typeof scope === "string");
+  context.application = { id: auth.application.id, ...(auth.application.icon !== undefined ? { icon: auth.application.icon } : {}) };
 
   return {
     id: auth.user.id,
