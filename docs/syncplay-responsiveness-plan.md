@@ -89,7 +89,9 @@ Only one engine may control playback. The approved implementation must replace
 the old SyncPlay controller bindings, waiting callbacks and playback-command
 subscriptions together; running both engines would reintroduce conflicting
 pauses and seeks. Queue ownership and automatic episode advancement must move
-with the timeline. Native login/party lifecycle will need to target that new
+with the timeline. Existing Discord playback commands must target the same
+coordinator so they cannot create a second playback authority. Native login/party
+lifecycle will need to target that new
 coordinator in the same release.
 
 ## Acceptance criteria and delivery

@@ -13,6 +13,7 @@ import { patchModernPresentation } from './presentationPatch.mjs';
 import { patchAccountView } from './accountPatch.mjs';
 import { patchLoginPage } from './loginPatch.mjs';
 import { patchAuthenticatedClient } from './authenticatedClientPatch.mjs';
+import { patchNativeViewLifecycle } from './viewLifecyclePatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -47,6 +48,7 @@ async function replace(relative, before, after) {
 
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
 await patchNativeIntegration(replace);
+await patchNativeViewLifecycle(replace);
 await patchNativeStartup(replace);
 await patchModernPresentation(replace);
 await patchAccountView(replace);
