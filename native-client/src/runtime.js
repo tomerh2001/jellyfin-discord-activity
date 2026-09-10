@@ -48,6 +48,7 @@ function reportError(message) { toast({ text: message }); }
 
 async function stopNative() {
     const stoppingClient = apiClient;
+    appRouter.cancelPendingNavigation();
     switching = true;
     resetPlaybackPermission();
     clearTimeout(reconnectTimer);

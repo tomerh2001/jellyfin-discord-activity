@@ -123,4 +123,29 @@ export async function patchNativeViewLifecycle(replace) {
     await replace(manager,
         '    hideView() {\n        if (currentView) {',
         '    hideView() {\n        if (currentView?.isConnected) {');
+
+    // An account transition cancels viewshow as well as the view itself. Release
+    // that navigation wait and invalidate queued calls before replacing views.
+    const router = 'src/components/router/appRouter.js';
+    await replace(router, '    resolveOnNextShow;', '    resolveOnNextShow;\n    showTimer;\n    navigationGeneration = 0;');
+    await replace(router,
+        '    async show(path, options) {\n        if (this.promiseShow) await this.promiseShow;',
+        '    async show(path, options) {\n        const generation = this.navigationGeneration;\n        if (this.promiseShow) await this.promiseShow;\n        if (generation !== this.navigationGeneration) return;');
+    await replace(router,
+        '            setTimeout(() => history.push(path, options), 0);',
+        `            this.showTimer = setTimeout(() => {
+                if (generation !== this.navigationGeneration) return;
+                this.showTimer = undefined;
+                history.push(path, options);
+            }, 0);`);
+    await replace(router,
+        '    onViewShow() {',
+        `    cancelPendingNavigation() {
+        this.navigationGeneration++;
+        clearTimeout(this.showTimer);
+        this.showTimer = undefined;
+        this.onViewShow();
+    }
+
+    onViewShow() {`);
 }

@@ -225,3 +225,81 @@ test('native view lifecycle patch rejects applying the adaptation twice', async 
         assert.equal(files.get(path).split(before).length, 2, 'fresh upstream anchor required');
     }), /fresh upstream anchor/);
 });
+
+async function routerFixture() {
+    const files = await sources();
+    const timers = new Map(); const pushes = []; const listeners = []; const documentListeners = new Map();
+    let timerId = 0;
+    const history = {
+        location: { pathname: '/home', search: '' },
+        listen(listener) { listeners.push(listener); return () => {}; },
+        push(path) {
+            pushes.push(path); this.location = { pathname: path, search: '' };
+            for (const listener of listeners) listener({ location: this.location });
+        }
+    };
+    const dependencies = {
+        '@jellyfin/sdk/lib/generated-client/models/collection-type': {}, '../backdrop/backdrop': {}, '../../lib/globalize': {},
+        '../itemHelper': {}, '../loading/loading': { default: { hide() {} } }, '../alert': {}, 'components/layoutManager': {},
+        'hooks/useItem': {}, 'lib/jellyfin-apiclient': {}, 'utils/query/queryClient': {}, RootAppRouter: { history }
+    };
+    const exports = {};
+    vm.runInNewContext(ts.transpileModule(files.get('src/components/router/appRouter.js'), { compilerOptions: {
+        module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022
+    } }).outputText, {
+        exports, document: { addEventListener: (event, callback) => documentListeners.set(event, callback) },
+        window: { location: { href: 'https://fixture.invalid/index.html#/home', pathname: '/index.html' } },
+        setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
+        clearTimeout(id) { timers.delete(id); }, console: { debug() {} },
+        require(name) { assert.ok(name in dependencies, `Unexpected native router dependency: ${name}`); return dependencies[name]; }
+    });
+    return { router: exports.appRouter, pushes, timers, history,
+        show: () => documentListeners.get('viewshow')(),
+        flush: () => { for (const [id, callback] of timers) { timers.delete(id); callback(); } }
+    };
+}
+
+test('account cancellation releases a missing viewshow and blocks old queued routes before pushing login', async () => {
+    const f = await routerFixture();
+    const details = f.router.show('/details'); f.flush();
+    const queuedOld = f.router.show('/old-account-settings');
+    await tick(); assert.deepEqual(f.pushes, ['/details']);
+    assert.ok(f.router.promiseShow);
+    f.router.cancelPendingNavigation();
+    await details; await queuedOld;
+    assert.equal(f.router.promiseShow, null);
+    assert.equal(f.timers.size, 0);
+    const login = f.router.show('/login'); f.flush();
+    assert.deepEqual(f.pushes, ['/details', '/login']);
+    f.show(); await login;
+    assert.equal(f.router.promiseShow, null);
+});
+
+test('account cancellation clears a delayed history push and its stale callback cannot alter a new navigation', async () => {
+    const f = await routerFixture();
+    const old = f.router.show('/old-account');
+    const callback = [...f.timers.values()][0];
+    const queuedOld = f.router.show('/queued-old-account');
+    f.router.cancelPendingNavigation();
+    await old; await queuedOld;
+    assert.equal(f.timers.size, 0);
+    assert.deepEqual(f.pushes, []);
+    const login = f.router.show('/login');
+    const currentTimer = f.router.showTimer;
+    callback();
+    assert.equal(f.router.showTimer, currentTimer);
+    assert.deepEqual(f.pushes, []);
+    f.flush(); f.show(); await login;
+    assert.deepEqual(f.pushes, ['/login']);
+});
+
+test('current native navigation still waits for viewshow before allowing the next route', async () => {
+    const f = await routerFixture();
+    const library = f.router.show('/library'); f.flush();
+    const details = f.router.show('/details');
+    await tick(); assert.deepEqual(f.pushes, ['/library']);
+    f.show(); await library; await tick(); f.flush();
+    assert.deepEqual(f.pushes, ['/library', '/details']);
+    f.show(); await details;
+    assert.equal(f.router.promiseShow, null);
+});
