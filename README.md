@@ -2,18 +2,18 @@
 
 # Jellyfin Watch
 
-Watch Jellyfin together in a Discord call using the official Jellyfin Web interface and native SyncPlay. The Activity adds Discord authentication, saved Jellyfin connections, invitations and a protected gateway around the native client.
+Watch Jellyfin together in a Discord call using the official Jellyfin Web interface and native SyncPlay. The Activity adds Discord authentication, saved Jellyfin connections, participant visibility and a protected gateway around the native client.
 
-Jellyfin Web is the Activity document. Discord authentication, account dialogs, library browsing and playback run in that same document. The existing Jellyfin SyncPlay button opens **Watch party** in the native header and video controls.
+Jellyfin Web is the Activity document. Discord authentication, native sign-in, library browsing and playback run in that same document. The existing Jellyfin SyncPlay button opens **Watch party** in the native header and video controls.
 
 ## Watch together
 
 1. Join a voice channel and open **Jellyfin Watch** from that call's **Activities** menu. You can also run `/watch` or use **Apps → Watch Jellyfin** on a user/message inside that voice channel's text chat.
-2. Use Jellyfin's account dialog to enter your server URL and sign in, or approve a Quick Connect code from an existing Jellyfin session. Your connection is remembered for your Discord account, with a preferred connection for each Discord server.
+2. Use Jellyfin's native login page to enter your server URL and sign in, or explicitly choose the community user where configured. Your connection is remembered for your Discord account, with a preferred connection for each Discord server.
 3. Browse Jellyfin normally and play a movie, episode or series. Friends join the running Discord Activity, connect their own account to the same Jellyfin server, and join its SyncPlay group automatically.
-4. Use Jellyfin's player and queue to pause, seek, skip to the next/previous episode, change the title, or add something to play next. Open **Watch party → Invite friends** when you want to open Discord's invitation dialog.
+4. Use Jellyfin's player and queue to pause, seek, skip to the next/previous episode, change the title, or add something to play next. Use Discord's native invite or Join Activity controls to bring friends into the same session.
 
-The **Watch party** menu also opens **Jellyfin accounts**, native **SyncPlay settings**, and **Leave watch party**. Use **Change server** to choose and confirm a different server for everyone. Joining an existing party requires an account on its current server; a saved preference never replaces another viewer's party automatically.
+The native **Watch party** button shows the people in this Activity, with live join and leave updates. Use Jellyfin's native **Sign out** to return to login and switch between personal and community accounts. To use a different server, start another Activity. Joining an existing party requires an account on its current server; a saved preference never replaces another viewer's party automatically.
 
 Playback and the queue are shared. Volume, audio track, subtitles and quality belong to each viewer. Every viewer needs permission to watch the selected content. An operator may also offer a clearly labelled **community account** with shared watch history; personal accounts remain available.
 
@@ -27,15 +27,15 @@ Playback and the queue are shared. Volume, audio track, subtitles and quality be
 | `/jellyfin stop` | Stop group playback |
 | `/jellyfin now` | Show the native player's current title and position |
 
-Starting from a different text channel creates a party in that channel; it does not move to your voice call. Friends must join the same running Activity to share playback. Launching does not post an invitation automatically after the [app entry point is configured](docs/discord-setup.md#install-and-register-commands); choose **Watch party → Invite friends** when you want to share one.
+Starting from a different text channel creates a party in that channel; it does not move to your voice call. Friends must join the same running Activity to share playback. Launching does not post an invitation automatically after the [app entry point is configured](docs/discord-setup.md#install-and-register-commands); use Discord's own invitation controls when you want to share one.
 
-Playback controls use the caller's current voice channel and require their active player in that channel's Activity. Command replies are visible only to the caller. All SyncPlay participants can control playback. Leaving the watch party revokes its session and keeps the voice call connected.
+Playback controls use the caller's current voice channel and require their active player in that channel's Activity. Command replies are visible only to the caller. All SyncPlay participants can control playback. Signing out revokes the selected Jellyfin connection while keeping Discord connected.
 
 ## Desktop and mobile
 
 The Activity uses Jellyfin's responsive web client in Discord's embedded browser. Enable Web, iOS and Android in the Developer Portal. If autoplay is blocked, Jellyfin's **Join playback** dialog offers **Tap to play on this device**. Volume, tracks, subtitles, quality and fullscreen use the native player controls. Available codecs, fullscreen, background playback and operating-system picture-in-picture depend on Discord and the device; this does not launch the installed Jellyfin app. Each viewer receives a separate stream, so transcoding and bandwidth grow with the party.
 
-Layout changes keep the same player and Discord connection. If an app session is interrupted, the open Activity can obtain a new session after Discord verifies its existing in-memory authorization and current membership. A failed verification grants no access; native connection dialogs offer **Try again** for a temporary outage, or ask you to reopen the Activity if required. Leaving explicitly prevents automatic recovery.
+Layout changes keep the same player and Discord connection. If an app session is interrupted, the open Activity can obtain a new session after Discord verifies its existing in-memory authorization and current membership. A failed verification grants no access; native connection dialogs offer **Try again** for a temporary outage, or ask you to reopen the Activity if required. Signing out requires another explicit Jellyfin login.
 
 Verify the compiled client in a browser after integration changes. Responsive browser checks do not establish physical iOS/Android playback or guaranteed fullscreen in the outer Discord application.
 

@@ -1,8 +1,7 @@
 /** Discord authentication and party selection live in the native document. */
 export function preferredAccount(data, party, matches) {
     const eligible = data.connections.filter(connection => !party || matches(connection, party));
-    return eligible.find(connection => connection.id === data.preferredConnectionId)
-        || (eligible.length === 1 ? eligible[0] : undefined);
+    return eligible.find(connection => connection.id === data.preferredConnectionId);
 }
 
 export function sameParty(left, right) {
@@ -21,6 +20,8 @@ export function createActivityController(broker, installLaunch, deviceId) {
     let closed = false;
     let leaving = false;
     let pending;
+    let selecting;
+    let logoutPending;
     let autoResumeUsed = false;
     let revision = 0;
     const stopRejected = broker.onSessionRejected(token => {
@@ -79,48 +80,91 @@ export function createActivityController(broker, installLaunch, deviceId) {
         get session() { return session; },
         get selection() { return selection; },
         get party() { return party; },
-        get busy() { return Boolean(pending) || leaving; },
+        get busy() { return Boolean(pending || logoutPending) || leaving; },
         get needsLaunch() { return refreshing; },
         async start() { session = await broker.startActivitySession(); issued.add(session.exchange.appToken); return session; },
         retryRecovery() { assertOpen(); autoResumeUsed = false; },
         call,
         async load() {
+            const generation = revision;
             const [data, current] = await Promise.all([call('getConnections'), call('getParty')]);
-            preferredConnectionId = data.preferredConnectionId;
-            party = current;
+            if (!closed && !leaving && !logoutPending && generation === revision) {
+                preferredConnectionId = data.preferredConnectionId;
+                party = current;
+            }
             return { data, party };
         },
         select(connection, replaceParty = false) {
             assertOpen();
+            if (logoutPending) throw new Error('Wait for sign out to finish.');
             if (pending) return pending;
             const generation = ++revision;
-            pending = (async () => {
+            const currentSelection = () => !closed && !leaving && generation === revision;
+            selecting = connection;
+            const operation = (async () => {
                 let current = await call('getParty');
+                if (!currentSelection()) return;
                 if (current && !replaceParty && !broker.matchesPartyServer(connection, current)) {
                     throw new Error('This party is using another Jellyfin server. Connect an account on that server to join.');
                 }
                 if (!current || replaceParty) current = await call('joinParty', connection.id);
+                if (!currentSelection()) return;
                 if (preferredConnectionId !== connection.id) {
                     await call('savePreference', connection.id);
+                    if (!currentSelection()) return;
                     preferredConnectionId = connection.id;
                 }
                 const launch = await call('launchNative', connection.id, deviceId);
-                const currentSelection = () => !closed && !leaving && generation === revision;
                 if (!currentSelection()) return;
                 await installLaunch(launch, connection, currentSelection);
                 if (!currentSelection()) return;
                 selection = connection;
                 party = current;
                 refreshing = false;
-            })().finally(() => { pending = undefined; });
-            return pending;
+            })().catch(error => {
+                // A revoked launch may fail after another account has signed
+                // in. Its obsolete error must not replace the new login UI.
+                if (currentSelection()) throw error;
+            }).finally(() => {
+                if (pending === operation) { pending = undefined; selecting = undefined; }
+            });
+            pending = operation;
+            return operation;
+        },
+        cancelSelection() {
+            assertOpen();
+            // Opening native login is a local choice, not a saved-account
+            // deletion. Invalidate reconnects before they can restore a client.
+            revision++;
+            pending = undefined;
+            selecting = undefined;
+            selection = undefined;
+            refreshing = false;
+        },
+        logoutAccount() {
+            assertOpen();
+            if (logoutPending) return logoutPending;
+            const connection = selection || selecting;
+            // Invalidate and detach an outstanding launch immediately. Its late
+            // completion must neither install a client nor clear a new login.
+            revision++;
+            pending = undefined;
+            selecting = undefined;
+            const operation = (async () => {
+                if (connection) await call('deleteConnection', connection.id);
+                selection = undefined;
+                preferredConnectionId = undefined;
+                refreshing = false;
+            })().finally(() => { if (logoutPending === operation) logoutPending = undefined; });
+            logoutPending = operation;
+            return operation;
         },
         async poll() {
-            if (closed || leaving || pending) return false;
+            if (closed || leaving || pending || logoutPending) return false;
             const generation = revision;
             const previous = party;
             const next = await call('getParty');
-            if (closed || leaving || pending || generation !== revision) return false;
+            if (closed || leaving || pending || logoutPending || generation !== revision) return false;
             if (!sameParty(previous, next)) {
                 party = next;
                 selection = undefined;

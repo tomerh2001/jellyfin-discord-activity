@@ -49,3 +49,18 @@ it("requests presence once through normal authorization and retains only its ver
   expect(context.application).toEqual({ id: "123", icon: "public-icon" });
   expect(JSON.stringify(context)).not.toMatch(/must-not-copy|private-origin|oauth-token/);
 });
+
+it("retains the authenticated SDK user on the context so a real Activity can identify You", async () => {
+  const user = { id: "1234567890", username: "viewer", global_name: "Display viewer", avatar: null };
+  fixture.ready.mockResolvedValue(undefined);
+  fixture.authenticate.mockResolvedValue({ user, scopes: ["identify"], application: { id: "app", icon: null } });
+  const { initializeDiscord, authenticateDiscord } = await import("./sdk.js");
+  const { mapActivityParticipants } = await import("./participants.js");
+  const context = await initializeDiscord(config);
+  expect(context.user).toBeUndefined();
+  const authenticated = await authenticateDiscord(context, "synthetic-access-token");
+  expect(context.user).toEqual({ id: user.id, username: user.username, globalName: user.global_name, avatar: null });
+  expect(authenticated).toBe(context.user);
+  expect(mapActivityParticipants(context, [user])).toEqual([{ id: user.id, displayName: user.global_name, isSelf: true }]);
+  expect(fixture.authenticate).toHaveBeenCalledExactlyOnceWith({ access_token: "synthetic-access-token" });
+});

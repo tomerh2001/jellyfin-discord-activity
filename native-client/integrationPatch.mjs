@@ -53,9 +53,8 @@ ${indent}}`);
     const onSyncPlayMenuClose = useCallback(() => {
         setSyncPlayMenuAnchorEl(null);
     }, [ setSyncPlayMenuAnchorEl ]);`,
-        `    const onSyncPlayButtonClick = useCallback((event: React.MouseEvent<HTMLElement>) => {
-        const anchor = event.currentTarget;
-        return import('discordActivity/runtime').then(module => module.openWatchMenu(anchor));
+        `    const onSyncPlayButtonClick = useCallback(() => {
+        return import('discordActivity/runtime').then(module => module.openWatchMenu());
     }, []);`);
     await replace(syncButton, "<Tooltip title={globalize.translate('ButtonSyncPlay')}>", "<Tooltip title='Watch party'>");
     await replace(syncButton, "aria-label={globalize.translate('ButtonSyncPlay')}", "aria-label='Watch party'");
@@ -68,10 +67,8 @@ ${indent}}`);
                 anchorEl={syncPlayMenuAnchorEl}
                 onMenuClose={onSyncPlayMenuClose}
             />`, '');
-    await replace('src/components/toolbar/AppUserMenu.tsx',
-        "{globalize.translate('ButtonSignOut')}", 'Jellyfin accounts');
-    // This native shortcut authorizes another device; Activity account login
-    // already provides broker Quick Connect without a forbidden server probe.
+    // This shortcut authorizes another device rather than signing into this
+    // Activity, so omit it from the native account menu.
     for (const statement of [
         "import PhonelinkLock from '@mui/icons-material/PhonelinkLock';\n",
         "import { useQuickConnectEnabled } from 'hooks/useQuickConnect';\n",
@@ -135,9 +132,7 @@ ${indent}}`);
     });
 }`,
         `export function logout() {
-    // Account selection stays in this document; explicit broker actions own
-    // saved-account disconnection and leaving the Discord Activity.
-    return import('discordActivity/runtime').then(module => module.openAccounts());
+    return import('discordActivity/runtime').then(module => module.logoutJellyfin());
 }`);
     await replace('src/utils/dashboard.js',
         `export function selectServer() {
@@ -187,6 +182,18 @@ ${indent}}`);
     await replace('src/components/viewManager/ViewManagerPage.tsx',
         '        location.pathname,\n        location.search',
         '        location.pathname,\n        location.search,\n        legacyApiClient');
+
+    const viewPage = 'src/components/viewManager/ViewManagerPage.tsx';
+    await replace(viewPage, '    viewOptions: ViewOptions\n)', '    viewOptions: ViewOptions,\n    isCurrent: () => boolean\n)');
+    await replace(viewPage,
+        '    const [ controllerFactory, viewHtml ] = await importController(appType, controller, view);',
+        '    const [ controllerFactory, viewHtml ] = await importController(appType, controller, view);\n    if (!isCurrent()) return;');
+    await replace(viewPage, '    useEffect(() => {\n        const loadPage', '    useEffect(() => {\n        let active = true;\n        const isCurrent = () => active;\n        const loadPage');
+    // Both direct loads and cache-restore fallbacks belong to this mounted route.
+    await replace(viewPage, '\n                return loadView(appType, controller, view, viewOptions);', '\n                return loadView(appType, controller, view, viewOptions, isCurrent);');
+    await replace(viewPage, '                        return loadView(appType, controller, view, viewOptions);', '                        return loadView(appType, controller, view, viewOptions, isCurrent);');
+    await replace(viewPage, '                    if (!result?.cancelled) {', '                    if (active && !result?.cancelled) {');
+    await replace(viewPage, '        loadPage();\n    },', '        loadPage();\n        return () => { active = false; };\n    },');
 
     await replace('src/lib/jellyfin-apiclient/ServerConnections.js',
         "import { createApiClient } from 'utils/jellyfin-apiclient/createApiClient';",

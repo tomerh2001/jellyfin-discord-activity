@@ -1,18 +1,12 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React from 'react';
+import ViewManagerPage from 'components/viewManager/ViewManagerPage';
 
 export const ACCOUNT_ROUTE_PATHS = ['login', 'selectserver', 'addserver', 'forgotpassword', 'forgotpasswordpin'];
 
-/** Native account links open the broker's native dialog in the same document. */
+/** Native Jellyfin login, usable before an authenticated API client exists. */
 export default function NativeAccountsRoute() {
-    const navigate = useNavigate();
-    useEffect(() => {
-        let cancelled = false;
-        const home = () => { if (!cancelled) navigate('/home', { replace: true }); };
-        // RootAppRouter imports route definitions during initialization. Defer
-        // the adapter import until mount to avoid a router/runtime import cycle.
-        import('./runtime').then(module => module.openAccounts()).then(home, home);
-        return () => { cancelled = true; };
-    }, [navigate]);
-    return null;
+    return React.createElement(ViewManagerPage, {
+        controller: 'session/login/index', view: 'session/login/index.html',
+        isNowPlayingBarEnabled: false
+    });
 }

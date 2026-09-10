@@ -93,8 +93,15 @@ export function normalizeUpstreamUrl(value: string): string {
  * The sole private/HTTP exception is the exact operator-configured base URL.
  */
 export async function validateUpstream(env: AppEnv, value: string): Promise<ValidatedUpstream> {
-  const serverUrl = normalizeUpstreamUrl(value);
-  const operatorApproved = serverUrl === normalizeUpstreamUrl(env.JELLYFIN_DEFAULT_SERVER_URL);
+  const requestedUrl = normalizeUpstreamUrl(value);
+  const defaultUrl = normalizeUpstreamUrl(env.JELLYFIN_DEFAULT_SERVER_URL);
+  // Operators can expose a public URL that resolves privately on their own
+  // network. Map only that exact configured alias to the already-approved
+  // default. Never DNS-resolve it, follow redirects, or grant its host/path a
+  // broader private-network exception. Stored connections keep one identity.
+  const serverUrl = env.JELLYFIN_PUBLIC_SERVER_URL
+    && requestedUrl === normalizeUpstreamUrl(env.JELLYFIN_PUBLIC_SERVER_URL) ? defaultUrl : requestedUrl;
+  const operatorApproved = serverUrl === defaultUrl;
   const url = new URL(serverUrl);
   if (!operatorApproved && (!env.JELLYFIN_ALLOW_CUSTOM_SERVERS || url.protocol !== "https:")) {
     throw new UpstreamPolicyError("jellyfin_server_not_allowed", "Use an allowed Jellyfin server with HTTPS.");

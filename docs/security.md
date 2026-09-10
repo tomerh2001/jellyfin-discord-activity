@@ -8,7 +8,7 @@ An open Activity may recover a lost app session through `/api/discord/resume` us
 
 Personal Jellyfin tokens are encrypted in SQLite and scoped to their Discord owner and normalized server identity. Passwords are not stored. Quick Connect approval secrets stay on the backend and are session-bound. Community access requires an explicit selection and an allowed guild; its dedicated non-admin account shares watch history. Disconnecting removes the saved connection and cancels its active viewers before attempting upstream token revocation.
 
-Generic targets require public HTTPS, checked DNS answers and pinned-IP HTTP/WebSocket connections. The only private/HTTP exception is the exact configured default URL. Redirects and paths escaping the configured base are rejected. Only the bundled, pinned Jellyfin Web client is served; remote servers cannot supply executable client code through the gateway.
+Generic targets require public HTTPS, checked DNS answers and pinned-IP HTTP/WebSocket connections. The only private/HTTP upstream exception is the exact configured default URL. An optional `JELLYFIN_PUBLIC_SERVER_URL` maps an exact normalized HTTPS alias to that same default before any DNS lookup; it does not grant the alias hostname, other paths or other ports private-network access. Account storage and party matching use the canonical destination. Redirects and paths escaping the configured base are rejected. Only the bundled, pinned Jellyfin Web client is served; remote servers cannot supply executable client code through the gateway.
 
 ## Native gateway and revocation
 

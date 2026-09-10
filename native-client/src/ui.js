@@ -1,8 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import { Alert, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
-    DialogContentText, DialogTitle, Divider, Icon, List, ListItem, ListItemButton,
-    ListItemIcon, ListItemText, Menu, MenuItem, Snackbar, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Avatar, Box, Button, CircularProgress, Dialog, DialogActions, DialogContent,
+    DialogContentText, DialogTitle, List, ListItem, ListItemAvatar, ListItemText, Snackbar, Stack, Typography } from '@mui/material';
 import { ThemeProvider } from '@mui/material/styles';
 import appTheme from 'themes';
 import { on as onInputCommand } from 'scripts/inputManager';
@@ -11,9 +10,9 @@ import { createNativeUi } from './uiCore';
 import { createModernComponents } from './uiComponents';
 import './ui.css';
 
-const ActivityDialogs = createModernComponents(React, { Alert, Box, Button, CircularProgress,
-    Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Divider, Icon,
-    List, ListItem, ListItemButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, TextField, Typography });
+const ActivityDialogs = createModernComponents(React, { Alert, Avatar, Box, Button, CircularProgress,
+    Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle,
+    List, ListItem, ListItemAvatar, ListItemText, Stack, Typography });
 let host;
 let notice = '';
 const noticeListeners = new Set();
@@ -30,8 +29,8 @@ function ModernUiHost() {
 }
 function ensureHost() {
     if (host) return;
-    // Bootstrap asks for an account before RootApp exists. This native theme
-    // root lives in the same document and survives account subtree remounts.
+    // Connection feedback can open before RootApp exists. This native theme
+    // root also keeps the roster available across account subtree remounts.
     const element = document.createElement('div');
     element.id = 'discord-modern-dialogs';
     document.body.appendChild(element);
@@ -43,5 +42,5 @@ function ensureHost() {
     host.render(React.createElement(ModernUiHost));
 }
 const controller = createNativeUi({ onChange: ensureHost, toast: showNotice });
-export const { chooseAccount, confirmServerChange, showWatchMenu, showLoading,
+export const { showParticipants, showLoading,
     showStartupError, showClosed, mountPlaybackPermission } = controller;

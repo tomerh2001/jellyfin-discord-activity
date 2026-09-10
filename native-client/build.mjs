@@ -11,6 +11,9 @@ import { patchNativeStartup } from './startupPatch.mjs';
 import { patchNativeSeekPreview } from './seekPreviewPatch.mjs';
 import { patchModernPresentation } from './presentationPatch.mjs';
 import { patchAccountView } from './accountPatch.mjs';
+import { patchLoginPage } from './loginPatch.mjs';
+import { patchAuthenticatedClient } from './authenticatedClientPatch.mjs';
+import { patchNativeViewLifecycle } from './viewLifecyclePatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -45,9 +48,17 @@ async function replace(relative, before, after) {
 
 await cp(path.join(root, 'src'), path.join(source, 'src/discordActivity'), { recursive: true });
 await patchNativeIntegration(replace);
+await patchNativeViewLifecycle(replace);
 await patchNativeStartup(replace);
 await patchModernPresentation(replace);
 await patchAccountView(replace);
+await patchLoginPage(replace);
+await patchAuthenticatedClient(replace);
+await writeFile(path.join(source, 'src/apps/legacy/controllers/session/login/index.js'), `import 'elements/emby-input/emby-input';
+import 'elements/emby-button/emby-button';
+import './login.scss';
+export { default } from 'discordActivity/loginPage';
+`);
 const seekController = path.join(source, 'src/apps/legacy/controllers/playback/video/index.js');
 await writeFile(seekController, patchNativeSeekPreview(await readFile(seekController, 'utf8')));
 await replace('webpack.common.js', "const NODE_MODULES_REGEX =", `// Pin build metadata to Jellyfin's source, not a containing checkout.\nCOMMIT_SHA = '${upstream.commit}';\nconst NODE_MODULES_REGEX =`);
@@ -66,7 +77,6 @@ await replace('src/index.jsx', "import getServerAddress from 'lib/jellyfin-apicl
 await replace('src/index.jsx', "import { pageClassOn, serverAddress } from './utils/dashboard';", "import { pageClassOn } from './utils/dashboard';");
 await replace('src/index.jsx', '    // Load the translation dictionary\n    await loadCoreDictionary();', '    // The dictionary was loaded before the native account dialogs.');
 await replace('src/index.jsx', '    await bootstrapDiscord();', '    await loadCoreDictionary();\n    await bootstrapDiscord();');
-await replace('src/plugins/syncPlay/plugin.ts', '(_, newApiClient) => SyncPlay.Manager.init(newApiClient)', '(_, newApiClient) => SyncPlay.Manager.updateApiClient(newApiClient)');
 await replace('src/index.jsx', '    await renderApp();', '    await renderApp();\n    await finishDiscordBootstrap();');
 await replace('src/index.jsx', '        registerServiceWorker();', '        // Activity sessions and gateway capabilities must never enter a service-worker cache.');
 await replace('src/index.jsx', '\ninit();', '\ninit().catch(failDiscordBootstrap);');
