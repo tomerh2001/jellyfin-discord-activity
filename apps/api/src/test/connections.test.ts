@@ -75,6 +75,28 @@ describe("saved Jellyfin connections", () => {
     expect(f.state.authCount).toBe(1);
   });
 
+  it("accepts the public alias while keeping saved account and preference identity canonical", async () => {
+    // .invalid cannot be contacted: every successful request must use the
+    // approved loopback fixture, without ever sending credentials to the alias.
+    const publicUrl = "https://media.invalid/jellyfin";
+    const f = await fixture({ JELLYFIN_PUBLIC_SERVER_URL: publicUrl, JELLYFIN_ALLOW_CUSTOM_SERVERS: "false" });
+    const alice = await actor(f.env, "alice", "guild-one");
+    const before = await f.app.inject({ method: "GET", url: "/api/connections", headers: alice.headers });
+    expect(before.json()).toMatchObject({ connections: [], defaultServerUrl: publicUrl, canonicalDefaultServerUrl: f.url });
+    expect(f.requests).toHaveLength(0);
+    const original = await connectWithPassword(f.env, alice.session, { serverUrl: f.url, username: "alice", password: "fixture" });
+    const result = await f.app.inject({ method: "POST", url: "/api/connections", headers: alice.headers,
+      payload: { serverUrl: `${publicUrl}/`, username: "alice", password: "fixture" } });
+    expect(result.statusCode).toBe(201);
+    expect(result.json()).toMatchObject({ connection: { id: original.id, serverUrl: f.url } });
+    const store = new JellyfinConnectionStore(f.env);
+    expect(store.list("alice", "guild-one")).toHaveLength(1);
+    expect(store.preferred("alice", "guild-one")).toBe(original.id);
+    expect((await resolveConnection(f.env, "alice", original.id, "guild-one")).target.serverUrl).toBe(f.url);
+    expect(f.state.logoutCount).toBe(1);
+    expect(f.requests.every((request) => request.headers.host === new URL(f.url).host)).toBe(true);
+  });
+
   it("isolates ownership and guild preferences, and clears preferences and capabilities on disconnect", async () => {
     const f = await fixture();
     const alice = await actor(f.env, "alice", "guild-one");
@@ -175,6 +197,19 @@ describe("saved Jellyfin connections", () => {
 });
 
 describe("Jellyfin Quick Connect", () => {
+  it("uses the same canonical destination when Quick Connect starts with the public alias", async () => {
+    const publicUrl = "https://media.invalid/jellyfin";
+    const f = await fixture({ JELLYFIN_PUBLIC_SERVER_URL: publicUrl });
+    const alice = await actor(f.env, "alice", "guild-one");
+    const manager = new QuickConnectManager(f.env); cleanups.push(() => manager.dispose());
+    const pending = await manager.start(alice.session, publicUrl);
+    f.state.quickAuthorized = true;
+    const result = await manager.poll(alice.session, pending.id);
+    expect(result).toMatchObject({ status: "connected", connection: { serverUrl: f.url } });
+    expect(f.requests.every((request) => request.headers.host === new URL(f.url).host)).toBe(true);
+    expect(f.state.quickAuthCount).toBe(1);
+  });
+
   it("returns only the code, binds polling to the exact app session, and exchanges the secret once", async () => {
     const f = await fixture();
     const alice = await actor(f.env, "alice", "guild-one");

@@ -1,7 +1,7 @@
 import { DiscordSDK, RPCCloseCodes } from "@discord/embedded-app-sdk";
 import { env } from "../env.js";
 import type { PublicEnv } from "../api/types.js";
-import type { ActivityParticipant } from "./participants.js";
+import { mapActivityParticipants, selfParticipant, type ActivityParticipant } from "./participants.js";
 
 export type ActivityDiscordContext = {
   instanceId: string;
@@ -126,12 +126,13 @@ export async function authenticateDiscord(context: ActivityDiscordContext, disco
   context.grantedScopes = auth.scopes.filter(scope => typeof scope === "string");
   context.application = { id: auth.application.id, ...(auth.application.icon !== undefined ? { icon: auth.application.icon } : {}) };
 
-  return {
+  context.user = {
     id: auth.user.id,
     username: auth.user.username,
     ...(auth.user.global_name !== undefined ? { globalName: auth.user.global_name } : {}),
     ...(auth.user.avatar !== undefined ? { avatar: auth.user.avatar } : {})
   };
+  return context.user;
 }
 
 /** Discord keeps an authenticated RPC socket until the Activity exits. */
@@ -144,24 +145,12 @@ export function closeDiscordActivity(context: ActivityDiscordContext): void {
 
 export async function getConnectedParticipants(context: ActivityDiscordContext): Promise<ActivityParticipant[]> {
   if (context.isMock || !context.sdk) {
-    return context.user
-      ? [{
-          id: context.user.id,
-          username: context.user.username,
-          ...(context.user.globalName !== undefined ? { globalName: context.user.globalName } : {}),
-          ...(context.user.avatar !== undefined ? { avatar: context.user.avatar } : {})
-        }]
-      : [];
+    return selfParticipant(context);
   }
 
   const response = await context.sdk.commands.getActivityInstanceConnectedParticipants();
 
-  return response.participants.map((participant) => ({
-    id: participant.id,
-    username: participant.global_name ?? participant.nickname ?? participant.username,
-    ...(participant.global_name !== undefined ? { globalName: participant.global_name } : {}),
-    ...(participant.avatar !== undefined ? { avatar: participant.avatar } : {})
-  }));
+  return mapActivityParticipants(context, response.participants);
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

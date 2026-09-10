@@ -6,6 +6,19 @@ const connection = { id: "account", serverUrl: "https://jellyfin.test", serverId
 const party = { id: "party", instanceId: "instance", serverId: "server", serverUrl: "https://jellyfin.test", groupId: "group" };
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
+it("keeps the public login address separate from canonical saved-account and party matching", async () => {
+  const response = {
+    connections: [{ ...connection, serverUrl: "http://jellyfin:8096" }],
+    defaultServerUrl: "https://jellyfin.example.com", canonicalDefaultServerUrl: "http://jellyfin:8096",
+    communityAvailable: true, preferredConnectionId: connection.id
+  };
+  const fetcher = vi.fn().mockResolvedValue(Response.json(response)); vi.stubGlobal("fetch", fetcher);
+  expect(await getConnections("app-token")).toEqual(response);
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith("/api/connections", expect.objectContaining({
+    method: "GET", headers: { Authorization: "Bearer app-token" }
+  }));
+});
+
 it("sends Jellyfin credentials only in an authenticated broker POST, never its URL or a direct upstream request", async () => {
   const fetcher = vi.fn().mockResolvedValue(Response.json({ connection })); vi.stubGlobal("fetch", fetcher);
   const input = { serverUrl: connection.serverUrl, username: "Viewer", password: "fixture-password" };

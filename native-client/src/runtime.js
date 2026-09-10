@@ -6,11 +6,10 @@ import { playbackManager } from 'components/playback/playbackmanager';
 import { appRouter } from 'components/router/appRouter';
 import viewContainer from 'components/viewContainer';
 import { queryClient } from 'utils/query/queryClient';
+import { setUserInfo } from 'scripts/settings/userSettings';
 import SyncPlay from 'plugins/syncPlay/core';
-import SyncPlaySettingsEditor from 'plugins/syncPlay/ui/settings/SettingsEditor';
 import Events from 'utils/events';
 import toast from 'components/toast/toast';
-import { observeMediaPlaying } from './mediaEvents';
 import { installPlaybackPermission } from './playbackPermission';
 import { observeQueueFailures } from './queueErrors';
 import { observeWatchPresence } from './watchPresence';
@@ -19,7 +18,7 @@ import { onDocumentExit } from './lifecycle';
 import { observeNavigation, restoredNavigation } from './navigation';
 import { createActivityController, preferredAccount } from './controller';
 import { beginAccountViewChange, finishAccountViewChange } from './accountViewState';
-import { chooseAccount, confirmServerChange, showWatchMenu, showLoading, showStartupError, showClosed, mountPlaybackPermission } from './ui';
+import { showParticipants, showLoading, showStartupError, mountPlaybackPermission } from './ui';
 import './style.css';
 
 let controller;
@@ -31,31 +30,44 @@ let switching = false;
 let joining;
 let reconnectTimer;
 let pollTimer;
-let accountDialog;
+let loginData;
+let loginPending;
+let logoutPending;
+let participants;
+let participantDialog;
+let participantSnapshot = { participants: [], loading: true };
 let stopClient = () => {};
 let clearPresence = () => {};
 let videoPresentation;
 let resetPlaybackPermission = () => {};
 let navigation;
-let status = 'Choose something to watch';
 const deviceId = crypto.randomUUID();
 const broker = window.JellyfinWatch;
 
 function reportError(message) { toast({ text: message }); }
 
 async function stopNative() {
+    const stoppingClient = apiClient;
     switching = true;
     resetPlaybackPermission();
     clearTimeout(reconnectTimer);
     joining = undefined;
     stopClient();
     stopClient = () => {};
+    await setUserInfo(null, null);
+    if (apiClient !== stoppingClient) return;
     // Unbind shared controls before stopping this device. Changing accounts must
     // never send Stop to the other people watching the same group.
     if (ready && SyncPlay.Manager.isSyncPlayEnabled()) SyncPlay.Manager.disableSyncPlay();
+    if (ready && SyncPlay.Manager.getPlayerWrapper()) {
+        SyncPlay.Manager.getPlaybackCore().clearScheduledCommand();
+        const clock = SyncPlay.Manager.getTimeSyncCore().timeSyncServer;
+        clock?.stopPing();
+        clock?.resetMeasurements();
+    }
     if (ready) await playbackManager.stop();
-    apiClient?.closeWebSocket();
-    videoPresentation?.stop();
+    stoppingClient?.closeWebSocket();
+    if (apiClient === stoppingClient) videoPresentation?.stop();
 }
 
 function watchNavigation(connection, route) {
@@ -66,52 +78,64 @@ function watchNavigation(connection, route) {
 
 async function installLaunch(next, connection, isCurrent) {
     if (!isCurrent()) return;
-    const route = restoredNavigation(value => broker.normalizeNativeRoute(value, next.serverId), {
-        sameAccount: controller.selection?.id === connection.id && launch?.serverId === next.serverId,
-        currentRoute: navigation?.route || window.location.hash,
-        restoreRoute: next.restoreRoute, initialHash: window.location.hash, ready
-    });
-    navigation?.dispose();
-    navigation = undefined;
-    await stopNative();
-    if (!isCurrent()) return;
-    // Modern Home retains imperative controllers inside React state. Suspend
-    // account providers before clearing queries and remount them for the new client.
-    flushSync(beginAccountViewChange);
-    // Both native query and cached view state belong to the selected account.
-    queryClient.clear();
-    if (ready) viewContainer.reset();
-    ServerConnections.clearData();
-    ServerConnections.getApiClients().splice(0);
-    launch = next;
-    const address = new URL(next.baseUrl, window.location.origin).href;
-    const server = {
-        Id: next.serverId, UserId: next.userId, AccessToken: next.accessToken,
-        ManualAddress: address, manualAddressOnly: true, LastConnectionMode: 2
-    };
-    apiClient = new ApiClient(address, 'Jellyfin Watch', '12.0.0', 'Discord Activity', deviceId);
-    apiClient.enableAutomaticNetworking = false;
-    apiClient.manualAddressOnly = true;
-    apiClient.serverInfo(server);
-    apiClient.setAuthenticationInfo(next.accessToken, next.userId);
-    ServerConnections.addApiClient(apiClient);
-    ServerConnections.setLocalApiClient(apiClient);
-    const result = await ServerConnections.connectToServer(server, {
-        enableAutoLogin: true, enableWebSocket: false, reportCapabilities: false,
-        enableAutomaticBitrateDetection: false
-    });
-    if (!isCurrent()) { apiClient.closeWebSocket(); return; }
-    if (result.State !== 'SignedIn') throw new Error('Could not connect to your Jellyfin account. Try choosing it again.');
-    ServerConnections.firstConnection = true;
-    switching = false;
-    flushSync(finishAccountViewChange);
-    if (ready) {
-        // A hash navigation uses the current native document and Discord socket.
-        await appRouter.show(route);
+    try {
+        const route = restoredNavigation(value => broker.normalizeNativeRoute(value, next.serverId), {
+            sameAccount: controller.selection?.id === connection.id && launch?.serverId === next.serverId,
+            currentRoute: navigation?.route || window.location.hash,
+            restoreRoute: next.restoreRoute, initialHash: window.location.hash, ready
+        });
+        navigation?.dispose();
+        navigation = undefined;
+        await stopNative();
         if (!isCurrent()) return;
-        watchNavigation(connection, route);
-        watchClient();
-    } else window.location.hash = route;
+        // Modern Home retains imperative controllers inside React state. Suspend
+        // account providers before clearing queries and remount them for the new client.
+        flushSync(beginAccountViewChange);
+        // Both native query and cached view state belong to the selected account.
+        queryClient.clear();
+        if (ready) viewContainer.reset();
+        ServerConnections.clearData();
+        ServerConnections.getApiClients().splice(0);
+        launch = next;
+        const address = new URL(next.baseUrl, window.location.origin).href;
+        const server = {
+            Id: next.serverId, UserId: next.userId, AccessToken: next.accessToken,
+            ManualAddress: address, manualAddressOnly: true, LastConnectionMode: 2
+        };
+        apiClient = new ApiClient(address, 'Jellyfin Watch', '12.0.0', 'Discord Activity', deviceId);
+        apiClient.enableAutomaticNetworking = false;
+        apiClient.manualAddressOnly = true;
+        apiClient.serverInfo(server);
+        apiClient.setAuthenticationInfo(next.accessToken, next.userId);
+        ServerConnections.addApiClient(apiClient);
+        ServerConnections.setLocalApiClient(apiClient);
+        const installedClient = apiClient;
+        const result = await ServerConnections.connectToServer(server, {
+            enableAutoLogin: true, enableWebSocket: false, reportCapabilities: false,
+            enableAutomaticBitrateDetection: false, isActivityCurrent: isCurrent
+        });
+        if (!isCurrent()) { installedClient.closeWebSocket(); return; }
+        if (result.State !== 'SignedIn') throw new Error('Could not connect to your Jellyfin account. Sign in to try again.');
+        ServerConnections.firstConnection = true;
+        switching = false;
+        flushSync(finishAccountViewChange);
+        if (ready) {
+            // A hash navigation uses the current native document and Discord socket.
+            await appRouter.show(route);
+            if (!isCurrent()) return;
+            watchNavigation(connection, route);
+            watchClient();
+        } else window.location.hash = route;
+    } catch (error) {
+        if (isCurrent()) {
+            await clearNativeAccount();
+            if (ready) {
+                await appRouter.show('/login');
+                reportError('Could not connect to Jellyfin. Sign in to try again.');
+            }
+        }
+        throw error;
+    }
 }
 
 async function retry(action, message) {
@@ -141,49 +165,94 @@ export async function bootstrapDiscord() {
     controller = createActivityController(broker, installLaunch, deviceId);
     const session = await retry(() => controller.start(), 'Connecting to Discord…');
     const stopPresentation = broker.observeActivityPresentation(session.discord, value => applyPresentation(document, value));
+    participants = broker.observeActivityParticipants(session.discord, value => {
+        participantSnapshot = value;
+        participantDialog?.update(value);
+    });
     onDocumentExit(window, () => {
         navigation?.flush(true);
         navigation?.dispose();
         closed = true;
-        stopPresentation(); controller.dispose(); stopClient(); clearInterval(pollTimer); clearTimeout(reconnectTimer);
+        participants.dispose(); participantDialog?.close(); stopPresentation(); controller.dispose(); stopClient(); clearInterval(pollTimer); clearTimeout(reconnectTimer);
     });
     const { data, party } = await retry(() => controller.load(), 'Loading your accounts…');
+    loginData = { data, party };
     const preferred = preferredAccount(data, party, broker.matchesPartyServer);
     if (preferred) {
         try { await controller.select(preferred); return; }
-        catch { /* Keep the account picker usable when a saved login has expired. */ }
+        catch { await clearNativeAccount(); }
     }
-    await openAccounts(false, true, false);
+    ServerConnections.firstConnection = true;
+    window.location.hash = '/login';
 }
 
-export function openAccounts(changingServer = false, required = false, explicit = true) {
-    if (closed) return Promise.resolve();
-    if (accountDialog) return accountDialog;
-    if (explicit) controller.retryRecovery();
-    const userCall = (method, ...args) => { controller.retryRecovery(); return controller.call(method, ...args); };
-    accountDialog = (async () => {
-        let notice;
-        do {
-            const { data, party } = await retry(() => controller.load(), 'Loading your accounts…');
-            const connection = await chooseAccount({
-                data, party: changingServer ? null : party, changingServer, canCancel: !required,
-                notice,
-                onRefresh: () => userCall('getConnections'),
-                onConnect: input => userCall('connectAccount', input),
-                onCommunity: () => userCall('connectCommunity'),
-                onDelete: id => userCall('deleteConnection', id),
-                onQuickStart: serverUrl => userCall('startQuickConnect', serverUrl),
-                onQuickPoll: (id, signal) => controller.call('pollQuickConnect', id, signal)
-            });
-            if (!connection) { if (required) continue; return; }
-            if (changingServer && !(await confirmServerChange(connection))) continue;
-            const loading = showLoading('Joining your watch party…');
-            try { controller.retryRecovery(); await controller.select(connection, changingServer); return; }
-            catch { notice = 'Could not join with that account. Check the server and try again.'; }
-            finally { loading.close(); }
-        } while (!closed);
-    })().finally(() => { accountDialog = undefined; });
-    return accountDialog;
+export async function getLoginOptions() {
+    if (!loginData) { controller.retryRecovery(); loginData = await controller.load(); }
+    const { data, party } = loginData;
+    const partyServerUrl = party && (party.serverUrl === data.canonicalDefaultServerUrl ? data.defaultServerUrl : party.serverUrl);
+    return {
+        defaultServerUrl: data.defaultServerUrl, partyServerUrl,
+        communityAvailable: data.communityAvailable && (!party || party.serverUrl === data.canonicalDefaultServerUrl)
+    };
+}
+
+export async function loginJellyfin(input, isCurrent = () => true) {
+    if (closed || !isCurrent()) return;
+    if (loginPending || logoutPending) throw new Error('Sign-in is still finishing. Try again in a moment.');
+    controller.retryRecovery();
+    loginPending = (async () => {
+        const connection = input ? await controller.call('connectAccount', input) : await controller.call('connectCommunity');
+        if (!isCurrent() || closed) return;
+        await controller.select(connection);
+        loginData = undefined;
+    })().catch(error => { loginData = undefined; throw error; })
+        .finally(() => { loginPending = undefined; });
+    return loginPending;
+}
+
+async function clearNativeAccount() {
+    navigation?.dispose(); navigation = undefined;
+    await stopNative();
+    flushSync(beginAccountViewChange);
+    queryClient.clear();
+    if (ready) viewContainer.reset();
+    ServerConnections.clearData();
+    ServerConnections.getApiClients().splice(0);
+    // Upstream setLocalApiClient ignores null; explicitly drop its local pointer.
+    ServerConnections.localApiClient = null;
+    window.ApiClient = undefined;
+    apiClient = undefined;
+    launch = undefined;
+    ServerConnections.firstConnection = true;
+    switching = false;
+    flushSync(finishAccountViewChange);
+}
+
+export function logoutJellyfin() {
+    if (logoutPending) return logoutPending;
+    logoutPending = (async () => {
+        try {
+            controller.retryRecovery();
+            // Revoke only this saved Jellyfin login; Discord and other viewers remain.
+            await controller.logoutAccount();
+            await clearNativeAccount();
+            loginData = undefined;
+            await appRouter.show('/login');
+        } catch {
+            reportError('Could not sign out. Try again.');
+        }
+    })().finally(() => { logoutPending = undefined; });
+    return logoutPending;
+}
+
+export async function openAccounts() {
+    if (closed) return;
+    controller.cancelSelection();
+    if (apiClient) await clearNativeAccount();
+    loginData = undefined;
+    controller.retryRecovery();
+    if (ready) await appRouter.show('/login');
+    else window.location.hash = '/login';
 }
 
 async function joinParty() {
@@ -191,13 +260,11 @@ async function joinParty() {
     if (closed || switching || joining?.client === client || !client?.isWebSocketOpen()) return;
     const attempt = { client, launch };
     joining = attempt;
-    status = 'Joining watch party';
     try {
         const response = await client.joinSyncPlayGroup({ GroupId: attempt.launch.groupId });
         if (response && !response.ok) throw new Error('Join failed');
-        if (joining === attempt && apiClient === client) status = 'Watching together';
     } catch {
-        if (joining === attempt && apiClient === client) status = 'Could not join the watch party';
+        if (joining === attempt && apiClient === client) reportError('Could not join the watch party. Reconnect to try again.');
     } finally { if (joining === attempt) joining = undefined; }
 }
 
@@ -215,13 +282,12 @@ function watchClient() {
     const disconnected = () => {
         if (switching || closed) return;
         presence.clear();
-        status = 'Reconnecting';
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-            if (controller.selection && !controller.busy && !accountDialog) {
+            if (controller.selection && !controller.busy && !loginPending && !logoutPending) {
                 void controller.select(controller.selection).catch(() => {
-                    reportError('Could not reconnect. Choose your account to try again.');
-                    void openAccounts(false, false, false);
+                    reportError('Could not reconnect. Sign in to try again.');
+                    void openAccounts();
                 });
             }
         }, 40000);
@@ -241,63 +307,41 @@ function watchClient() {
 
 export async function finishDiscordBootstrap() {
     ready = true;
-    watchNavigation(controller.selection, window.location.hash);
-    Events.on(SyncPlay.Manager, 'enabled', (_event, enabled) => { status = enabled ? 'Watching together' : 'Party disconnected'; });
-    const stopObserving = observeMediaPlaying(document, value => value instanceof HTMLMediaElement, () => {
-        status = 'Watching together';
-    });
+    if (controller.selection) watchNavigation(controller.selection, window.location.hash);
     videoPresentation = observeVideoPresentation(document, value => value instanceof HTMLVideoElement, () => {});
-    const stopped = () => { resetPlaybackPermission(); videoPresentation.stop(); status = 'Choose something to watch'; };
+    const stopped = () => { resetPlaybackPermission(); videoPresentation.stop(); };
     Events.on(playbackManager, 'playbackstop', stopped);
     const stopPermission = installPlaybackPermission(window, () => SyncPlay.Manager.getLastPlaybackCommand(), mountPlaybackPermission);
     resetPlaybackPermission = stopPermission.reset;
-    onDocumentExit(window, () => { stopObserving(); videoPresentation.dispose(); stopPermission(); Events.off(playbackManager, 'playbackstop', stopped); });
-    watchClient();
+    onDocumentExit(window, () => { videoPresentation.dispose(); stopPermission(); Events.off(playbackManager, 'playbackstop', stopped); });
+    if (apiClient) watchClient();
     let polling = false;
     pollTimer = setInterval(async () => {
-        if (closed || polling || switching || controller.busy || accountDialog) return;
+        if (closed || polling || switching || controller.busy || loginPending || logoutPending || !apiClient) return;
         polling = true;
         try {
             if (await controller.poll()) {
                 navigation?.dispose();
                 await stopNative();
-                reportError('The party changed server. Choose your account to join.');
-                void openAccounts(false, true, false);
+                reportError('The party changed server. Sign in to join.');
+                void openAccounts();
             } else if (controller.needsLaunch && controller.selection) await controller.select(controller.selection);
         } catch (error) {
-            if (error?.recoveryRequired) { clearPresence(); void openAccounts(false, false, false); }
+            if (error?.recoveryRequired) { clearPresence(); void openAccounts(); }
             // A temporary broker outage must not stop working playback.
         }
         finally { polling = false; }
     }, 5000);
 }
 
-export function openWatchMenu(anchor) {
+export function openWatchMenu() {
     if (!controller || closed) return Promise.resolve();
-    const manager = SyncPlay.Manager;
-    return showWatchMenu({
-        anchor, status,
-        onInvite: async () => {
-            const discord = controller.session.discord;
-            if (!discord.sdk || !discord.guildId) { reportError('Use Discord’s channel invite or Join Activity controls.'); return; }
-            try { await discord.sdk.commands.openInviteDialog(); }
-            catch { reportError('Discord could not open an invite. Use the channel’s Join Activity controls.'); }
-        },
-        onAccounts: () => openAccounts(),
-        onChangeServer: () => openAccounts(true),
-        onLeave: async () => {
-            try { await controller.leave(); }
-            catch { reportError('Could not confirm sign-out. Try leaving again.'); return; }
-            closed = true;
-            navigation?.dispose();
-            clearInterval(pollTimer);
-            await stopNative();
-            await showClosed({});
-        },
-        onSyncSettings: manager.isSyncPlayEnabled() ? () => new SyncPlaySettingsEditor(apiClient, manager.getTimeSyncCore(), { groupInfo: manager.getGroupInfo() }).embed() : undefined,
-        onResumePlayback: manager.isSyncPlayEnabled() && !manager.isPlaylistEmpty() && !manager.isPlaybackActive() ? () => manager.resumeGroupPlayback(apiClient) : undefined,
-        onHaltPlayback: manager.isSyncPlayEnabled() && manager.isPlaybackActive() ? () => manager.haltGroupPlayback(apiClient) : undefined
-    });
+    if (participantDialog) return participantDialog.result;
+    const dialog = showParticipants(participantSnapshot);
+    participantDialog = dialog;
+    void participants.refresh();
+    void dialog.result.finally(() => { if (participantDialog === dialog) participantDialog = undefined; });
+    return dialog.result;
 }
 
 export function failDiscordBootstrap() {

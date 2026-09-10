@@ -21,6 +21,7 @@ function fixture(install) {
         matchesPartyServer: matches,
         joinParty: async () => { calls.push('join'); return party; },
         savePreference: async () => calls.push('preference'),
+        deleteConnection: async (token, id) => calls.push(['delete', token, id]),
         launchNative: async token => { calls.push(['launch', token]); return { accessToken: token }; },
         logout: async () => calls.push('logout')
     };
@@ -30,12 +31,139 @@ function fixture(install) {
 
 test('a preferred server never silently replaces an existing party', async () => {
     const other = { ...connection, id: 'other', serverUrl: 'https://other.example' };
-    assert.equal(preferredAccount({ connections: [connection, other], preferredConnectionId: 'other' }, party, matches), connection);
+    assert.equal(preferredAccount({ connections: [connection, other], preferredConnectionId: 'other' }, party, matches), undefined);
     const f = fixture(); await f.controller.start();
     await assert.rejects(f.controller.select(other), /another Jellyfin server/);
     assert.deepEqual(f.calls, ['start']);
     await f.controller.select(other, true);
     assert.ok(f.calls.includes('join'));
+});
+
+test('a sole eligible saved account requires an explicit preference before restoring', () => {
+    for (const kind of ['personal', 'community']) {
+        const saved = { ...connection, kind };
+        for (const current of [null, party]) {
+            assert.equal(preferredAccount({ connections: [saved], preferredConnectionId: null }, current, matches), undefined);
+            assert.equal(preferredAccount({ connections: [saved], preferredConnectionId: 'removed-account' }, current, matches), undefined);
+            assert.equal(preferredAccount({ connections: [saved], preferredConnectionId: saved.id }, current, matches), saved);
+        }
+    }
+});
+
+test('native logout deletes the saved account and relogin uses the same Discord session and party', async () => {
+    const f = fixture(); await f.controller.start(); await f.controller.load();
+    await f.controller.select(connection);
+    assert.ok(!f.calls.includes('preference'));
+    await f.controller.logoutAccount();
+    assert.equal(f.controller.selection, undefined);
+    assert.equal(f.controller.party, party);
+    assert.equal(f.controller.needsLaunch, false);
+    assert.deepEqual(f.calls.filter(value => Array.isArray(value) && value[0] === 'delete'), [['delete', 'initial', connection.id]]);
+    assert.equal(f.controller.session.exchange.appToken, 'initial');
+    // Even if the upstream account is unchanged, a subsequent explicit login
+    // must save that choice again instead of retaining the deleted preference.
+    await f.controller.select(connection);
+    assert.equal(f.controller.selection, connection);
+    assert.equal(f.calls.filter(value => value === 'preference').length, 1);
+    assert.equal(f.calls.filter(value => value === 'start').length, 1);
+    for (const action of ['logout', 'clear', 'close', 'join']) assert.ok(!f.calls.includes(action));
+});
+
+test('duplicate native logout shares one deletion and a failed deletion can be retried', async () => {
+    const f = fixture(); await f.controller.start(); await f.controller.select(connection);
+    const deleted = deferred();
+    let deletes = 0;
+    f.broker.deleteConnection = async () => { deletes++; await deleted.promise; throw new Error('unavailable'); };
+    const first = f.controller.logoutAccount();
+    const second = f.controller.logoutAccount();
+    assert.equal(first, second);
+    assert.equal(f.controller.busy, true);
+    assert.throws(() => f.controller.select(connection), /sign out/);
+    assert.equal(await f.controller.poll(), false);
+    const failed = assert.rejects(first, /unavailable/);
+    deleted.resolve();
+    await failed;
+    assert.equal(deletes, 1);
+    assert.equal(f.controller.selection, connection);
+    assert.equal(f.controller.busy, false);
+    f.broker.deleteConnection = async () => { deletes++; };
+    await f.controller.logoutAccount();
+    assert.equal(f.controller.selection, undefined);
+    assert.equal(deletes, 2);
+});
+
+test('logout cancels a pending selection before it can create a party or save a preference', async () => {
+    const f = fixture(); await f.controller.start();
+    const waiting = deferred();
+    f.broker.getParty = () => waiting.promise;
+    const selection = f.controller.select(connection);
+    await f.controller.logoutAccount();
+    waiting.resolve(null);
+    await selection;
+    assert.deepEqual(f.calls, ['start', ['delete', 'initial', connection.id]]);
+    assert.equal(f.controller.selection, undefined);
+});
+
+test('a late pre-logout launch cannot install or clear a newer pending login', async () => {
+    const f = fixture(); await f.controller.start();
+    const firstLaunched = deferred();
+    const oldLaunch = deferred();
+    f.broker.launchNative = () => { firstLaunched.resolve(); return oldLaunch.promise; };
+    const oldSelection = f.controller.select(connection);
+    await firstLaunched.promise;
+    await f.controller.logoutAccount();
+    const nextConnection = { ...connection, id: 'new-account' };
+    const newLaunched = deferred();
+    const newLaunch = deferred();
+    f.broker.launchNative = () => { newLaunched.resolve(); return newLaunch.promise; };
+    const newSelection = f.controller.select(nextConnection);
+    await newLaunched.promise;
+    oldLaunch.resolve({ accessToken: 'old-launch' });
+    await oldSelection;
+    assert.equal(f.controller.busy, true);
+    assert.equal(f.controller.selection, undefined);
+    newLaunch.resolve({ accessToken: 'new-launch' });
+    await newSelection;
+    assert.equal(f.controller.selection, nextConnection);
+    assert.deepEqual(f.calls.filter(value => Array.isArray(value) && value[0] === 'install'), [['install', 'new-launch']]);
+    assert.equal(f.controller.busy, false);
+});
+
+test('logout invalidates an already installing client before a newer account is selected', async () => {
+    const installing = deferred();
+    const delayed = deferred();
+    let isCurrent;
+    const f = fixture(async (_launch, _connection, current) => {
+        isCurrent = current;
+        installing.resolve();
+        await delayed.promise;
+    });
+    await f.controller.start();
+    const selection = f.controller.select(connection);
+    await installing.promise;
+    assert.equal(isCurrent(), true);
+    await f.controller.logoutAccount();
+    assert.equal(isCurrent(), false);
+    delayed.resolve();
+    await selection;
+    assert.equal(f.controller.selection, undefined);
+    assert.equal(f.controller.busy, false);
+});
+
+test('an old launch rejected by logout does not surface a stale error over the new login', async () => {
+    const f = fixture(); await f.controller.start();
+    const launched = deferred();
+    const delayed = deferred();
+    f.broker.launchNative = async () => { launched.resolve(); await delayed.promise; throw new Error('revoked account'); };
+    const oldSelection = f.controller.select(connection);
+    await launched.promise;
+    await f.controller.logoutAccount();
+    f.broker.launchNative = async () => ({ accessToken: 'new-login' });
+    const nextConnection = { ...connection, id: 'next-account' };
+    await f.controller.select(nextConnection);
+    delayed.resolve();
+    await assert.doesNotReject(oldSelection);
+    assert.equal(f.controller.selection, nextConnection);
 });
 
 test('repeat account selection installs fresh native clients while reusing one Discord session', async () => {
@@ -46,6 +174,64 @@ test('repeat account selection installs fresh native clients while reusing one D
     assert.equal(f.calls.filter(value => Array.isArray(value) && value[0] === 'install').length, 2);
     assert.equal(f.controller.selection.id, 'another-user-on-same-server');
     assert.ok(!f.calls.includes('join'));
+});
+
+test('opening login cancels a reconnect without deleting its remembered account or changing the party', async () => {
+    const f = fixture(); await f.controller.start(); await f.controller.load(); await f.controller.select(connection);
+    const launched = deferred(); const delayed = deferred();
+    f.broker.launchNative = () => { launched.resolve(); return delayed.promise; };
+    const reconnect = f.controller.select(connection);
+    await launched.promise;
+    f.controller.cancelSelection();
+    assert.equal(f.controller.selection, undefined);
+    assert.equal(f.controller.busy, false);
+    assert.equal(f.controller.needsLaunch, false);
+    assert.equal(f.controller.party, party);
+    assert.equal(f.controller.session.exchange.appToken, 'initial');
+    delayed.resolve({ accessToken: 'stale-reconnect' });
+    await reconnect;
+    assert.equal(f.controller.selection, undefined);
+    assert.deepEqual(f.calls.filter(value => Array.isArray(value) && value[0] === 'install'), [['install', 'initial']]);
+    f.broker.launchNative = async () => ({ accessToken: 'explicit-login' });
+    await f.controller.select(connection);
+    assert.equal(f.controller.selection, connection);
+    assert.ok(!f.calls.includes('preference'), 'the existing explicit saved preference remains valid');
+    assert.ok(!f.calls.some(value => Array.isArray(value) && value[0] === 'delete'));
+    for (const action of ['logout', 'clear', 'close', 'join', 'resume']) assert.ok(!f.calls.includes(action));
+});
+
+test('opening login invalidates an installing client without blocking or clearing a newer selection', async () => {
+    const installing = deferred(); const delayedOld = deferred(); const delayedNew = deferred();
+    let oldCurrent;
+    const nextConnection = { ...connection, id: 'next-account' };
+    const f = fixture(async (_launch, selected, isCurrent) => {
+        if (selected === connection) { oldCurrent = isCurrent; installing.resolve(); await delayedOld.promise; }
+        else await delayedNew.promise;
+    });
+    await f.controller.start();
+    const oldSelection = f.controller.select(connection);
+    await installing.promise;
+    assert.equal(oldCurrent(), true);
+    f.controller.cancelSelection();
+    assert.equal(oldCurrent(), false);
+    const newSelection = f.controller.select(nextConnection);
+    delayedOld.resolve(); await oldSelection;
+    assert.equal(f.controller.busy, true, 'an obsolete completion cannot clear a newer pending login');
+    delayedNew.resolve(); await newSelection;
+    assert.equal(f.controller.selection, nextConnection);
+    assert.equal(f.controller.busy, false);
+});
+
+test('opening login prevents an already pending party poll from replacing current party state', async () => {
+    const f = fixture(); await f.controller.start(); await f.controller.load(); await f.controller.select(connection);
+    const delayed = deferred();
+    f.broker.getParty = () => delayed.promise;
+    const poll = f.controller.poll();
+    f.controller.cancelSelection();
+    delayed.resolve({ ...party, id: 'stale' });
+    assert.equal(await poll, false);
+    assert.equal(f.controller.party, party);
+    assert.equal(f.controller.selection, undefined);
 });
 
 test('restoring the saved account skips redundant preference writes without skipping party validation', async () => {

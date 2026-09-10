@@ -21,6 +21,8 @@ Account, party and native-launch API requests require `Authorization: Bearer <ap
 | POST `/api/native/launch` | Create a viewer gateway with `{connectionId,deviceId}` |
 | POST `/api/discord/interactions` | Independently signed Discord commands |
 
+`GET /api/connections` returns `defaultServerUrl` for the user-facing login address and `canonicalDefaultServerUrl` for matching the default server against saved connections and party metadata. These differ only when the operator configured `JELLYFIN_PUBLIC_SERVER_URL`; the canonical URL remains the approved upstream destination.
+
 `/api/discord/resume` uses `Authorization: Bearer <discordOAuthAccessToken>`, not an app token. Its JSON body is `{instanceId,userId,guildId?,channelId?}`. The backend verifies the OAuth grant's application, `identify` scope and expiration through Discord, confirms the current user independently, and checks the own application's live Activity instance, participant list, channel/guild and allowlist. A claimed identity or an expired app token alone cannot recover access. This route retains ingress authentication and returns private/no-store responses.
 
 Successful recovery returns the same response shape as exchange: `{appToken,discordAccessToken,user,expiresAt}`. The parent uses only the OAuth token already held in document memory and does not repeat SDK authorization/authentication on its authenticated connection. Concurrent rejected requests share one recovery attempt; failed proof grants no session. Leave disables automatic recovery and revokes a late session if recovery completes after disposal. Old server sessions or native queues are not restored from storage.

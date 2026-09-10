@@ -4,7 +4,7 @@ import { z } from "zod";
 import { AuthError, requireAppSession, sendAuthError } from "../plugins/auth.js";
 import { communityAvailable, connectCommunity, ConnectionError, connectWithPassword, disconnectConnection,
   JellyfinConnectionStore, QuickConnectManager, suggestedServerUrl } from "../services/jellyfinConnections.js";
-import { UpstreamPolicyError } from "../services/upstreamPolicy.js";
+import { normalizeUpstreamUrl, UpstreamPolicyError } from "../services/upstreamPolicy.js";
 
 const loginSchema = z.object({ serverUrl: z.string().min(1).max(2048), username: z.string().trim().min(1).max(200),
   password: z.string().max(4096) }).strict();
@@ -20,6 +20,7 @@ export const connectionRoutes: FastifyPluginAsync = async (app) => {
     try {
       const session = await requireAppSession(request);
       return reply.send({ connections: store.list(session.discordUserId, session.discordContext?.guildId), defaultServerUrl: suggestedServerUrl(app.envConfig),
+        canonicalDefaultServerUrl: normalizeUpstreamUrl(app.envConfig.JELLYFIN_DEFAULT_SERVER_URL),
         communityAvailable: communityAvailable(app.envConfig, session),
         preferredConnectionId: store.preferred(session.discordUserId, session.discordContext?.guildId) });
     } catch (error) { return sendError(reply, error); }

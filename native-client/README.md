@@ -28,21 +28,31 @@ The build applies a small integration patch before compiling the upstream source
   packaged in the same build. They do not fetch `config.json` again at startup.
   Configuration changes therefore require a new native build and release.
 - The Modern toolbar's MUI SyncPlay button, also used by its video OSD,
-  opens **Watch party** only when clicked. Its native controls offer invitations, accounts,
-  shared server changes, SyncPlay settings, local playback resume/halt when
-  available, and leaving. Fullscreen stays with Jellyfin's player controls.
-- Account selection uses Jellyfin Modern's MUI dialog and form components.
-  It supports saved accounts, server URL and
-  password login, Quick Connect, explicit community-account selection, and saved
-  account removal. One persistent React dialog root uses Jellyfin’s upstream
-  theme and storage manager in the same document. It mounts before RootApp:
-  bootstrap waits for account selection, so mounting dialogs inside the router
-  would deadlock first-time sign-in. Account subtree remounts do not remove it.
-  Modern login and server-selection routes open this chooser,
-  and the native user menu exposes **Jellyfin accounts**.
-  Quick Connect polls sequentially and aborts on cancellation; late results
-  cannot select an account after the dialog closes. Failed requests leave an
-  actionable native error state with loading cleared.
+  opens **Watch party** only when clicked. It shows the people in the current
+  Discord Activity, their display names and avatars, and identifies the current
+  viewer as **You**. The only action is **Close**. Fullscreen stays with Jellyfin's
+  player controls. The roster uses the Embedded App SDK's
+  `getActivityInstanceConnectedParticipants` snapshot and
+  `ACTIVITY_INSTANCE_PARTICIPANTS_UPDATE` events; an existing unused getter alone
+  did not render any participants. A newer push wins over an older pending
+  snapshot so a departed person cannot reappear. Opening the panel refreshes
+  its data without another OAuth exchange or background polling. Names are
+  rendered as text and avatar paths contain only validated Discord IDs/hashes.
+  This is Activity presence, not proof of Jellyfin authentication, playback
+  readiness or authorization; server-side membership and account checks remain
+  independent. SDK errors retain the last roster with an explicit warning.
+- First use renders Jellyfin's own login page and native form controls inside
+  the Modern app. The form adds the server URL and an explicit **Sign in as
+  community user** button where configured. Personal credentials go to the
+  broker, which keeps only the encrypted Jellyfin token. No login happens from
+  a single saved account unless the user previously selected that preference.
+  Subsequent launches restore that choice. The native **Sign out** action
+  deletes the selected saved connection, revokes its viewer capabilities and
+  returns to login; it keeps the Discord session and other viewers connected.
+  Every successful personal or community login installs a fresh native client
+  and automatically joins the current Activity party after its socket opens.
+  Bootstrap can render login before an ApiClient exists; SyncPlay initializes
+  on the first authenticated client, then updates on later account changes.
 - The native ApiClient receives an opaque gateway capability, account and device
   identity. Real Jellyfin credentials remain on the broker. Native credentials
   are held in memory and service-worker registration is disabled.
@@ -120,7 +130,7 @@ The build applies a small integration patch before compiling the upstream source
   with keepalive on real document exit. They contain no tokens or playback commands.
   A new verified instance can reclaim one recently disconnected group only for
   the same user, connection, server and guild/channel, with no connected viewers.
-  Old capabilities are revoked. Explicit Leave or account removal invalidates
+  Old capabilities are revoked. Sign out or account removal invalidates
   restoration. The Activity cannot suppress Discord's own refresh prompt.
 - [HLS.js](https://github.com/video-dev/hls.js) 1.6.16 uses its lockfile-pinned
   standalone worker asset. Rebundling the default
@@ -134,23 +144,22 @@ Concurrent startup and session recovery share their in-flight work. Recovery
 uses the already-held Discord OAuth token; the backend checks its application,
 scope, expiry, user identity and current Activity membership before issuing a
 replacement session. No cached identity or browser storage can supply that proof.
-Explicit leaving revokes the app session, clears retained authorization and
-closes the Activity while keeping the voice call connected.
+The Discord SDK stays connected during Jellyfin sign-out and sign-in.
+Closing the Activity leaves the voice call connected.
 
 Joining checks both the server URL and identity. A saved preferred connection
-cannot replace an existing party. **Change server** requires a separate native
-confirmation; other viewers detect the replacement and choose an account for
-the new server. Account switching keeps the Discord SDK document alive. Before
-installing the next native ApiClient, the adapter unbinds SyncPlay, stops only
-local playback, closes its socket, and clears native query and cached view state.
-That prevents a local account change from issuing a shared Stop or displaying
-the previous account's cached library.
+cannot replace an existing party. The login page uses that party's server and
+maps the operator's canonical default to its configured public address for
+presentation. To use another server, start another Activity. Account switching
+keeps the Discord SDK document alive. The adapter unbinds SyncPlay before stopping
+only local playback, closes its socket, and clears native query and cached view
+state. That prevents a local account change from issuing a shared Stop or
+showing the previous account's cached library.
 
-Launch commands and the configured application-handled entry point respond only
-to a user invocation and do not send an automatic channel invitation. **Watch
-party → Invite friends** explicitly opens Discord's invitation dialog. A launch
-in another text channel belongs to that channel; friends must join the same
-running Activity to share its SyncPlay group.
+Launch commands and the configured entry point respond only to a user invocation
+and do not send an automatic channel invitation. Discord's native invitation and
+Join Activity controls bring friends into the same running Activity. The native
+Watch party button shows only its live participants and a Close control.
 
 Discord Rich Presence follows actual local playback, using the native player
 metadata without extra Jellyfin requests. Episodes show the series, season,

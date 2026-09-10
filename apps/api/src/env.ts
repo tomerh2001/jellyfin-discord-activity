@@ -34,6 +34,8 @@ export const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY: z.string().default(""),
   DATABASE_URL: z.string().default("file:/data/app.db"),
   JELLYFIN_DEFAULT_SERVER_URL: z.string().url().default("http://localhost:8096"),
+  // An exact user-facing alias for the approved default, never another upstream.
+  JELLYFIN_PUBLIC_SERVER_URL: z.union([z.literal(""), z.url({ protocol: /^https$/ })]).default(""),
   JELLYFIN_ALLOW_CUSTOM_SERVERS: booleanFromString.default(true),
   JELLYFIN_AUTH_MODE: z.enum(["per-user", "shared"]).default("per-user"),
   JELLYFIN_SHARED_USERNAME: z.string().default(""),

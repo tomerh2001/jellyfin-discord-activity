@@ -379,5 +379,7 @@ export class QuickConnectManager {
   }
 }
 
-export function suggestedServerUrl(env: AppEnv): string { return normalizeUpstreamUrl(env.JELLYFIN_DEFAULT_SERVER_URL); }
+export function suggestedServerUrl(env: AppEnv): string {
+  return normalizeUpstreamUrl(env.JELLYFIN_PUBLIC_SERVER_URL || env.JELLYFIN_DEFAULT_SERVER_URL);
+}
 function notFound(): ConnectionError { return new ConnectionError("connection_not_found", "This saved connection was not found.", 404); }

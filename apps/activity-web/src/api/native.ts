@@ -10,7 +10,7 @@ const connectionSchema = z.object({
 });
 export type Connection = z.infer<typeof connectionSchema>;
 const connectionsSchema = z.object({
-  connections: z.array(connectionSchema), defaultServerUrl: z.string(), communityAvailable: z.boolean(),
+  connections: z.array(connectionSchema), defaultServerUrl: z.string(), canonicalDefaultServerUrl: z.string(), communityAvailable: z.boolean(),
   preferredConnectionId: z.string().nullable()
 });
 export type Connections = z.infer<typeof connectionsSchema>;

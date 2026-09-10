@@ -53,6 +53,41 @@ describe("Jellyfin upstream policy", () => {
       .rejects.toMatchObject({ code: "jellyfin_server_not_allowed" });
   });
 
+  it("maps only the exact configured public alias to the approved default before DNS lookup", async () => {
+    const operator = { ...env(), JELLYFIN_PUBLIC_SERVER_URL: "https://media.example/jellyfin" };
+    dns.mockResolvedValue([{ address: "10.40.0.9", family: 4 }]);
+    const canonical = await validateUpstream(operator, operator.JELLYFIN_DEFAULT_SERVER_URL);
+    const alias = await validateUpstream(operator, "https://MEDIA.example:443/jellyfin/");
+    expect(alias).toEqual(canonical);
+    expect(alias).toMatchObject({ serverUrl: "http://operator.internal:8096/jellyfin", operatorApproved: true });
+    expect(dns.mock.calls.map(([hostname]) => hostname)).toEqual(["operator.internal", "operator.internal"]);
+    await expect(validateUpstream({ ...operator, JELLYFIN_ALLOW_CUSTOM_SERVERS: false }, operator.JELLYFIN_PUBLIC_SERVER_URL))
+      .resolves.toEqual(canonical);
+  });
+
+  it("does not expand public alias approval to another scheme, port, host, or path", async () => {
+    const operator = { ...env(), JELLYFIN_PUBLIC_SERVER_URL: "https://media.example/jellyfin" };
+    dns.mockResolvedValue([{ address: "10.40.0.9", family: 4 }]);
+    for (const serverUrl of ["http://media.example/jellyfin", "https://media.example:8443/jellyfin",
+      "https://media.example", "https://media.example/jellyfin/admin", "https://other.example/jellyfin",
+      "https://media.example.evil.example/jellyfin"]) {
+      await expect(validateUpstream(operator, serverUrl)).rejects.toMatchObject({ code: "jellyfin_server_not_allowed" });
+    }
+    for (const serverUrl of ["https://secret@media.example/jellyfin", "https://media.example/jellyfin?target=internal",
+      "https://media.example/jellyfin#fragment"]) {
+      await expect(validateUpstream(operator, serverUrl)).rejects.toMatchObject({ code: "invalid_jellyfin_url" });
+    }
+    expect(dns.mock.calls.every(([hostname]) => hostname !== "operator.internal")).toBe(true);
+    await expect(validateUpstream(env(), "https://media.example/jellyfin"))
+      .rejects.toMatchObject({ code: "jellyfin_server_not_allowed" });
+  });
+
+  it("requires HTTPS for the operator's optional user-facing alias", () => {
+    expect(loadEnv({ NODE_ENV: "test" }).JELLYFIN_PUBLIC_SERVER_URL).toBe("");
+    expect(() => loadEnv({ NODE_ENV: "test", JELLYFIN_PUBLIC_SERVER_URL: "http://media.example" })).toThrow();
+    expect(() => loadEnv({ NODE_ENV: "test", JELLYFIN_PUBLIC_SERVER_URL: "ftp://media.example" })).toThrow();
+  });
+
   it.each(["ftp://public.example", "https://user:password@public.example", "https://public.example?a=b",
     "https://public.example/#fragment", "https://public.example./", "https://public.example/a%2fb", "https://public.example/a\\b",
     " https://public.example", "https://public.example/a%250a"])("rejects ambiguous base URL %s", (url) => {

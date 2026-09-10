@@ -29,7 +29,7 @@ it("loads a passive facade outside Discord and overlaps one Activity handshake w
       expect(Object.keys(facade).sort()).toEqual([
         "StartupTimeout", "clearActivitySession", "closeDiscordActivity", "connectAccount", "connectCommunity", "createWatchPresence", "deleteConnection",
         "getConnectedParticipants", "getConnections", "getParty", "joinParty", "launchNative", "logout", "matchesPartyServer", "normalizeNativeRoute",
-        "observeActivityPresentation", "onSessionRejected", "pollQuickConnect", "resumeActivitySession", "saveNativeRestore", "savePreference", "startActivitySession", "startQuickConnect"
+        "observeActivityParticipants", "observeActivityPresentation", "onSessionRejected", "pollQuickConnect", "resumeActivitySession", "saveNativeRestore", "savePreference", "startActivitySession", "startQuickConnect"
       ]);
       expect(Object.values(facade).every(value => typeof value === "function")).toBe(true);
       expect(window.document.documentElement.outerHTML).toBe(before);
