@@ -66,7 +66,7 @@ Discord's default `DISCORD_LAUNCH_ACTIVITY` handler (`2`) automatically posts a 
 2. Select **Jellyfin Watch** in the call's Activities menu. From the voice channel's text chat, `/watch` or right-click a user/message → **Apps → Watch Jellyfin** also launches it there.
 3. Authenticate inside the Activity. Other viewers join the same running Activity.
 4. Connect a personal Jellyfin account or explicitly choose the available community account.
-5. Browse native Jellyfin and play a title. Friends join the running Activity and its SyncPlay group. If playback is blocked on a phone, use **Tap to play on this device** to unlock that video.
+5. Browse native Jellyfin and play a title. Friends join the running Activity and automatically follow its current playback. If playback is blocked on a phone, use **Tap to play on this device** to unlock that video.
 6. Test playback, pause/seek, next/previous episode, personal tracks and reconnects with two people.
 
 Launch commands open the Activity in the channel where they were invoked. Running `/watch` in a general bot-command text channel creates a text-channel Activity there; joining voice elsewhere does not move it. Separate Discord channels have separate parties. To watch together, join the same running Activity in the intended channel. The app never redirects a launch to a configured bot-command channel.

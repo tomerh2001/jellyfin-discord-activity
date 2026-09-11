@@ -2,7 +2,7 @@
 
 # Jellyfin Watch
 
-Watch Jellyfin together in a Discord call using the official Jellyfin Web interface and native SyncPlay. The Activity adds Discord authentication, saved Jellyfin connections, participant visibility and a protected gateway around the native client.
+Watch Jellyfin together in a Discord call using the official Jellyfin Web interface and an Activity playback coordinator. The Activity adds Discord authentication, saved Jellyfin connections, participant visibility and a protected gateway around the native client.
 
 Jellyfin Web is the Activity document. Discord authentication, native sign-in, library browsing and playback run in that same document. The existing Jellyfin SyncPlay button opens **Watch party** in the native header and video controls.
 
@@ -10,7 +10,7 @@ Jellyfin Web is the Activity document. Discord authentication, native sign-in, l
 
 1. Join a voice channel and open **Jellyfin Watch** from that call's **Activities** menu. You can also run `/watch` or use **Apps → Watch Jellyfin** on a user/message inside that voice channel's text chat.
 2. Use Jellyfin's native login page to enter your server URL and sign in, or explicitly choose the community user where configured. Your connection is remembered for your Discord account, with a preferred connection for each Discord server.
-3. Browse Jellyfin normally and play a movie, episode or series. Friends join the running Discord Activity, connect their own account to the same Jellyfin server, and join its SyncPlay group automatically.
+3. Browse Jellyfin normally and play a movie, episode or series. Friends join the running Discord Activity, connect their own account to the same Jellyfin server, and follow the current watch party automatically.
 4. Use Jellyfin's player and queue to pause, seek, skip to the next/previous episode, change the title, or add something to play next. Use Discord's native invite or Join Activity controls to bring friends into the same session.
 
 The native **Watch party** button shows the people in this Activity, with live join and leave updates. Use Jellyfin's native **Sign out** to return to login and switch between personal and community accounts. To use a different server, start another Activity. Joining an existing party requires an account on its current server; a saved preference never replaces another viewer's party automatically.
@@ -21,7 +21,7 @@ Playback and the queue are shared. Volume, audio track, subtitles and quality be
 | --- | --- |
 | `/watch` or Apps → Watch Jellyfin | Open the Activity in the channel where invoked |
 | `/jellyfin play query:…` | Find and play a movie or episode |
-| `/jellyfin pause` / `resume` | Pause or resume the native group |
+| `/jellyfin pause` / `resume` | Pause or resume the watch party |
 | `/jellyfin seek seconds:…` | Seek the group |
 | `/jellyfin next` / `previous` | Move through the native queue |
 | `/jellyfin stop` | Stop group playback |
@@ -29,7 +29,7 @@ Playback and the queue are shared. Volume, audio track, subtitles and quality be
 
 Starting from a different text channel creates a party in that channel; it does not move to your voice call. Friends must join the same running Activity to share playback. Launching does not post an invitation automatically after the [app entry point is configured](docs/discord-setup.md#install-and-register-commands); use Discord's own invitation controls when you want to share one.
 
-Playback controls use the caller's current voice channel and require their active player in that channel's Activity. Command replies are visible only to the caller. All SyncPlay participants can control playback. Signing out revokes the selected Jellyfin connection while keeping Discord connected.
+Playback controls use the caller's current voice channel and require their active player in that channel's Activity. Command replies are visible only to the caller. All authorized Activity viewers can control playback. Local controls apply before network acknowledgements; buffering viewers catch up independently. Signing out revokes the selected Jellyfin connection while keeping Discord connected.
 
 ## Desktop and mobile
 

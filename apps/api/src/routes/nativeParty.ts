@@ -59,8 +59,11 @@ export function nativeRouteError(error: unknown, reply: import("fastify").Fastif
       reply.header("X-Application-Error-Code", error.code);
     }
     const messages: Record<string, string> = {
-      syncplay_create_not_allowed: "This Jellyfin account cannot create watch groups. Ask its server administrator to allow creating and joining SyncPlay groups.",
-      syncplay_join_not_allowed: "This Jellyfin account cannot join watch groups. Ask its server administrator to enable SyncPlay access.",
+      native_playback_denied: "Your Jellyfin account does not have permission to play media.",
+      activity_queue_changed: "Someone changed the queue. Follow the current episode and try again.",
+      activity_stale_command: "This playback action arrived too late. Follow the current party and try again.",
+      activity_invalid_command: "This playback action is invalid. Reopen the selection and try again.",
+      activity_invalid_queue: "This selection has an invalid queue. Choose an individual movie, episode or season.",
       native_invalid_queue: "Jellyfin sent an invalid playback queue. Open a movie or an individual episode and try again.",
       native_queue_empty: "Jellyfin returned no playable items for this selection. Open an individual movie or episode and try again.",
       native_queue_too_large: "This selection has more than 500 items. Choose a season or a smaller selection."

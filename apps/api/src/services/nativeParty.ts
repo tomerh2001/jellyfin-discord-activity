@@ -6,6 +6,7 @@ import { renewActivityMembership } from "./appSession.js";
 import { sessionStore, type AppSession } from "./sessionStore.js";
 import { assertConnectionCurrent, onConnectionsRevoked, resolveConnection } from "./jellyfinConnections.js";
 import { readUpstreamJson, upstreamFetch } from "./upstreamPolicy.js";
+import { ActivityPlaybackCoordinator } from "./activityPlayback.js";
 
 export type NativeConnection = Awaited<ReturnType<typeof resolveConnection>>;
 export type NativeParty = {
@@ -17,7 +18,6 @@ export type NativeParty = {
   serverId: string;
   serverUrl: string;
   groupId: string;
-  control: NativeIdentity;
   viewers: Set<string>;
   currentPlaylistItemId?: string;
   queueItemIds: string[];
@@ -51,7 +51,7 @@ type DisconnectedParty = { sessionId: string; discordUserId: string; connection:
 type NavigationCheckpoint = { sessionId: string; discordUserId: string; capability: string; route: string; until: number; sequence: number };
 const CLIENT = "Jellyfin Discord Activity";
 // Keep the native queue while a renderer/popout reconnects. Socket loss still
-// leaves SyncPlay immediately, and membership/session expiry still fail closed.
+// detaches the viewer immediately; membership/session expiry still fail closed.
 const EMPTY_GRACE_MS = 120_000;
 const LAUNCH_GRACE_MS = 120_000;
 const ITEM_CHECK_CONCURRENCY = 8;
@@ -94,8 +94,9 @@ export function getNativePartyService(app: FastifyInstance): NativePartyService 
   return service;
 }
 
-/** Native SyncPlay owns all playback state. These maps only bind authorization and lifecycle. */
+/** Bind native library credentials and viewer lifecycle to the Activity playback coordinator. */
 export class NativePartyService {
+  readonly playback = new ActivityPlaybackCoordinator(this);
   private readonly itemChecks = new WeakMap<NativeViewer, Map<string, Promise<{ until: number; sources: Set<string> }>>>();
   readonly parties = new Map<string, NativeParty>();
   readonly viewers = new Map<string, NativeViewer>();
@@ -212,7 +213,7 @@ export class NativePartyService {
     const party = candidates[0]!;
     const prior = this.disconnected.get(party.id)!.get(actorKey)!;
     this.dependencies.current(this.env, session.discordUserId, prior.connection, context.guildId);
-    // Mark every old capability revoked before awaiting any upstream Leave.
+    // Mark every old capability revoked before yielding during cleanup.
     // A second idle renderer cannot open a socket during the first cleanup.
     await Promise.all([...party.viewers].map((cap) => this.viewers.get(cap))
       .filter((viewer): viewer is NativeViewer => !!viewer).map((viewer) => this.revoke(viewer)));
@@ -262,27 +263,17 @@ export class NativePartyService {
         if (restored) return restored;
       }
       // Resolve and authenticate the replacement before disturbing the current party.
-      const identity = { connection, deviceId: `activity-control-${randomBytes(16).toString("hex")}` };
-      const created = await this.json(identity, "POST", "/SyncPlay/New", { GroupName: "Discord watch party" }) as { GroupId?: string };
-      if (!created?.GroupId || !/^[a-f0-9-]{32,36}$/i.test(created.GroupId)) throw new NativeError("invalid_syncplay_group", 502);
-      try { await this.json(identity, "POST", "/SyncPlay/SetIgnoreWait", { IgnoreWait: true }); }
-      catch (error) { await this.leaveIdentity(identity); throw error; }
-      if (!sessionStore.getSession(session.id) || this.closed) {
-        await this.leaveIdentity(identity);
-        throw new NativeError("native_session_expired", 401);
-      }
-      try {
-        if (existing) await this.destroyParty(existing);
-        this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
-        if (!sessionStore.getSession(session.id) || this.closed) throw new NativeError("native_session_expired", 401);
-      } catch (error) { await this.leaveIdentity(identity); throw error; }
+      if (!sessionStore.getSession(session.id) || this.closed) throw new NativeError("native_session_expired", 401);
+      if (existing) await this.destroyParty(existing);
+      this.dependencies.current(this.env, session.discordUserId, connection, session.discordContext?.guildId);
+      if (!sessionStore.getSession(session.id) || this.closed) throw new NativeError("native_session_expired", 401);
       const context = session.discordContext!;
       const party: NativeParty = {
         id: randomBytes(16).toString("hex"), context, instanceId: context.instanceId,
         ...(context.guildId ? { guildId: context.guildId } : {}),
         ...(context.channelId ? { channelId: context.channelId } : {}),
-        serverId: connection.serverId, serverUrl: connection.serverUrl, groupId: created.GroupId,
-        control: identity, viewers: new Set(), emptySince: Date.now() + LAUNCH_GRACE_MS, queueItemIds: []
+        serverId: connection.serverId, serverUrl: connection.serverUrl, groupId: randomBytes(16).toString("hex"),
+        viewers: new Set(), emptySince: Date.now() + LAUNCH_GRACE_MS, queueItemIds: []
       };
       this.parties.set(party.id, party);
       this.bindings.set(key, party.id);
@@ -384,7 +375,7 @@ export class NativePartyService {
     if (!sessionStore.getSession(session.id)) throw new NativeError("native_session_expired", 401);
   }
 
-  /** Abort sockets and transfers synchronously, then explicitly leave the native group. */
+  /** Abort sockets and transfers synchronously without disrupting the shared timeline. */
   async revoke(viewer: NativeViewer): Promise<void> {
     if (viewer.revoked) return;
     viewer.revoked = true;
@@ -395,9 +386,7 @@ export class NativePartyService {
     if (party && !party.viewers.size) party.emptySince = Date.now();
     for (const abort of [...viewer.aborters]) abort();
     viewer.aborters.clear();
-    const cleanup = this.leaveIdentity(viewer);
-    viewer.socketCleanup = cleanup;
-    await cleanup;
+    this.playback.forgetViewer(viewer);
     viewer.joined = false;
   }
 
@@ -408,17 +397,14 @@ export class NativePartyService {
   async revokeConnection(discordUserId: string, connectionId: string): Promise<void> {
     const key = this.actorConnection(discordUserId, connectionId);
     for (const records of [...this.navigation.values(), ...this.disconnected.values()]) records.delete(key);
-    const parties = [...this.parties.values()].filter((party) => party.control.connection.id === connectionId);
-    const cleanup = parties.map((party) => this.destroyParty(party));
     const viewers = [...this.viewers.values()].filter((v) => v.discordUserId === discordUserId && v.connection.id === connectionId);
-    await Promise.all([...cleanup, ...viewers.map((v) => this.revoke(v))]);
+    await Promise.all(viewers.map((v) => this.revoke(v)));
   }
 
   async socketDisconnected(viewer: NativeViewer): Promise<void> {
     viewer.sockets = Math.max(0, viewer.sockets - 1);
     if (viewer.sockets || viewer.revoked) return;
-    // Do not wait for Jellyfin 10.11's lost-WebSocket session timeout. The native
-    // group must stop waiting for this participant even after a mobile network drop.
+    // A disconnected viewer never pauses the party timeline.
     viewer.lastSeen = Date.now();
     viewer.lastSocketClose = Date.now();
     const actorKey = this.actorConnection(viewer.discordUserId, viewer.connection.id);
@@ -430,14 +416,6 @@ export class NativePartyService {
     }
     this.notifyDisconnect(viewer.partyId);
     viewer.joined = false;
-    const cleanup = this.leaveIdentity(viewer);
-    viewer.socketCleanup = cleanup;
-    await cleanup;
-  }
-
-  private async leaveIdentity(identity: NativeIdentity): Promise<void> {
-    try { await this.json(identity, "POST", "/SyncPlay/Leave"); }
-    catch { /* Token revocation or an already-ended upstream session needs no retry. */ }
   }
 
   async json(identity: NativeIdentity, method: string, path: string, body?: unknown): Promise<unknown> {
@@ -450,7 +428,6 @@ export class NativePartyService {
     } catch { throw new NativeError("jellyfin_unavailable", 502); }
     if (!response.ok) {
       await response.body?.cancel();
-      if (response.status === 403 && path === "/SyncPlay/New") throw new NativeError("syncplay_create_not_allowed", 403);
       throw new NativeError("jellyfin_request_failed", response.status === 401 ? 401 : 502);
     }
     if (response.status === 204 || response.headers.get("content-length") === "0") return null;
@@ -498,7 +475,7 @@ export class NativePartyService {
     const party = this.parties.get(viewer.partyId);
     if (!party) throw new NativeError("native_session_expired", 401);
     const members = [...party.viewers].map((cap) => this.viewers.get(cap)).filter((v): v is NativeViewer => !!v && this.active(v));
-    // Validate before invoking the one native mutation, so a denied member cannot
+    // Validate before committing the shared queue, so a denied member cannot
     // be silently dropped from a party when another participant selects media.
     await this.checkItems(members, itemIds);
   }
@@ -532,13 +509,14 @@ export class NativePartyService {
       return this.json(viewer, "GET", `/Items?${query}`);
     }
     if (action === "now") {
-      const sessions = await this.json(viewer, "GET", `/Sessions?DeviceId=${encodeURIComponent(viewer.deviceId)}`) as Array<{ Id?: string; NowPlayingItem?: { Id?: string; Name?: string }; PlayState?: { PositionTicks?: number; IsPaused?: boolean } }>;
-      const own = sessions.find((s) => s.Id === nativeSessionId(viewer));
-      return { itemId: own?.NowPlayingItem?.Id, title: own?.NowPlayingItem?.Name, positionSeconds: (own?.PlayState?.PositionTicks ?? 0) / 10_000_000, isPaused: own?.PlayState?.IsPaused ?? true, groupId: party.groupId };
+      const { snapshot } = await this.playback.get(viewer);
+      const itemId = snapshot.queue[snapshot.index]?.itemId;
+      const item = itemId ? await this.json(viewer, "GET", `/Users/${viewer.connection.jellyfinUserId}/Items/${itemId}`) as { Name?: string } : undefined;
+      return { itemId, title: item?.Name, positionSeconds: snapshot.positionTicks / 10_000_000, isPaused: snapshot.paused, groupId: party.groupId };
     }
     if (action === "seek") {
       if (!Number.isFinite(payload?.seconds) || payload!.seconds! < 0) throw new NativeError("invalid_position", 400);
-      return this.json(viewer, "POST", "/SyncPlay/Seek", { PositionTicks: Math.round(payload!.seconds! * 10_000_000) });
+      return this.playback.control(viewer, (snapshot) => ({ type: "seek", positionTicks: Math.round(payload!.seconds! * 10_000_000), paused: snapshot.paused }));
     }
     if (action === "queue" || action === "select") {
       let ids = payload?.itemIds ?? [];
@@ -556,41 +534,25 @@ export class NativePartyService {
           if (start >= 0) ids = episodes.slice(start);
         }
       }
-      await this.requirePartyItems(viewer, ids);
-      await this.authorize(viewer.capability);
-      return action === "queue" ? this.json(viewer, "POST", "/SyncPlay/Queue", { ItemIds: ids, Mode: "Queue" })
-        : this.json(viewer, "POST", "/SyncPlay/SetNewQueue", { PlayingQueue: ids, PlayingItemPosition: 0, StartPositionTicks: 0 });
+      if (!ids.length) throw new NativeError("native_queue_empty", 400);
+      const queue = ids.map((itemId) => ({ id: randomBytes(16).toString("hex"), itemId }));
+      return this.playback.control(viewer, () => action === "queue" ? { type: "enqueue", queue }
+        : { type: "setQueue", queue, index: 0, positionTicks: 0, paused: false });
     }
     if (action === "next" || action === "previous") {
-      if (!party.currentPlaylistItemId) throw new NativeError("no_playing_item", 409);
-      return this.json(viewer, "POST", `/SyncPlay/${action === "next" ? "NextItem" : "PreviousItem"}`, { PlaylistItemId: party.currentPlaylistItemId });
+      return this.playback.control(viewer, (snapshot) => {
+        const entry = snapshot.queue[snapshot.index + (action === "next" ? 1 : -1)];
+        if (!entry) throw new NativeError("no_playing_item", 409);
+        return { type: "select", queueItemId: entry.id, positionTicks: 0, paused: false };
+      });
     }
-    return this.json(viewer, "POST", `/SyncPlay/${{ pause: "Pause", play: "Unpause", stop: "Stop" }[action]}`);
+    return this.playback.control(viewer, () => action === "stop" ? { type: "stop" } : { type: "setPlayback", paused: action === "pause" });
   }
 
   observeMessage(viewer: NativeViewer, message: unknown): boolean {
-    if (!message || typeof message !== "object") return false;
-    const event = message as { MessageType?: string; Data?: { GroupId?: string; Type?: string; Data?: { PlayingItemIndex?: number; Playlist?: Array<{ PlaylistItemId?: string; ItemId?: string }> } } };
-    const party = this.parties.get(viewer.partyId);
-    if (!party) return false;
-    if (event.MessageType === "SyncPlayGroupUpdate" || event.MessageType === "SyncPlayCommand") {
-      if (event.Data?.Type && ["LibraryAccessDenied", "NotInGroup", "GroupDoesNotExist"].includes(event.Data.Type)) {
-        if (!event.Data.GroupId || event.Data.GroupId === party.groupId || /^0{32}$|^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(event.Data.GroupId)) {
-          viewer.joined = false;
-          return true;
-        }
-      }
-      if (event.Data?.GroupId !== party.groupId) return false;
-      if (event.Data?.Type === "GroupJoined") viewer.joined = true;
-      if (event.Data?.Type === "PlayQueue") {
-        const queue = event.Data.Data;
-        party.queueItemIds = (queue?.Playlist ?? []).flatMap((item) => item.ItemId ? [item.ItemId] : []);
-        const id = queue?.Playlist?.[queue?.PlayingItemIndex ?? -1]?.PlaylistItemId;
-        if (id) party.currentPlaylistItemId = id;
-        else delete party.currentPlaylistItemId;
-      }
-      return true;
-    }
+    if (!message || typeof message !== "object" || !this.parties.has(viewer.partyId)) return false;
+    const event = message as { MessageType?: string };
+    // Upstream SyncPlay must never become a second playback authority.
     return ["ForceKeepAlive", "KeepAlive", "UserDataChanged", "LibraryChanged", "ServerRestarting", "ServerShuttingDown"].includes(event.MessageType ?? "");
   }
 
@@ -611,12 +573,7 @@ export class NativePartyService {
       }));
       for (const party of [...this.parties.values()]) {
         if (!party.viewers.size && party.emptySince && Date.now() - party.emptySince > EMPTY_GRACE_MS) await this.destroyParty(party);
-        else if (party.viewers.size) {
-          // Keep the IgnoreWait control identity alive while viewers are connected.
-          // A failed control ping means the group cannot be assumed usable anymore.
-          try { await this.json(party.control, "POST", "/SyncPlay/Ping", { Ping: 0 }); }
-          catch { await this.destroyParty(party); }
-        }
+
       }
     } finally { this.sweeping = false; }
   }
@@ -629,7 +586,7 @@ export class NativePartyService {
     this.notifyDisconnect(party.id);
     for (const [key, id] of this.bindings) if (id === party.id) this.bindings.delete(key);
     await Promise.all([...party.viewers].map((cap) => this.viewers.get(cap)).filter((v): v is NativeViewer => !!v).map((v) => this.revoke(v)));
-    await this.leaveIdentity(party.control);
+    this.playback.destroy(party.id);
   }
 
   async close(): Promise<void> {

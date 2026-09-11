@@ -39,7 +39,7 @@ let slowTransferClosed: boolean;
 let imageContentType: string;
 let socketAcceptDelay: number;
 let episodeMode: boolean;
-let denyGroupCreation: boolean;
+let denyPlayback: boolean;
 let largePlaylist: boolean;
 let itemDelay: number;
 let activeItemChecks: number;
@@ -52,7 +52,7 @@ async function eventually(check: () => boolean): Promise<void> {
 }
 
 beforeEach(async () => {
-  sessions = []; calls = []; upstreamSockets = new Map(); deniedForUser = new Set(); failItemStatus = 404; slowTransferClosed = false; imageContentType = "image/png"; socketAcceptDelay = 0; episodeMode = false; denyGroupCreation = false; largePlaylist = false;
+  sessions = []; calls = []; upstreamSockets = new Map(); deniedForUser = new Set(); failItemStatus = 404; slowTransferClosed = false; imageContentType = "image/png"; socketAcceptDelay = 0; episodeMode = false; denyPlayback = false; largePlaylist = false;
   itemDelay = 0; activeItemChecks = 0; maxItemChecks = 0;
   upstream = Fastify({ logger: false });
   await upstream.register(websocketPlugin);
@@ -78,16 +78,7 @@ beforeEach(async () => {
     const url = new URL(request.url, "http://local");
     const authorization = request.headers.authorization ?? "";
     calls.push({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: request.body, authorization });
-    if (url.pathname === "/SyncPlay/New") return denyGroupCreation ? reply.code(403).send({ secret: TOKEN }) : { GroupId: GROUP };
-    if (url.pathname === `/SyncPlay/${GROUP}`) return { GroupId: GROUP, GroupName: "Discord watch party", Participants: ["shared"] };
-    if (url.pathname.startsWith("/SyncPlay/")) {
-      if (url.pathname.endsWith("/Join")) {
-        const socket = upstreamSockets.get(device(authorization));
-        socket?.send(JSON.stringify({ MessageType: "SyncPlayGroupUpdate", Data: { GroupId: GROUP, Type: "GroupJoined", Data: { GroupId: GROUP } } }));
-        socket?.send(JSON.stringify({ MessageType: "SyncPlayGroupUpdate", Data: { GroupId: GROUP, Type: "PlayQueue", Data: { PlayingItemIndex: 0, Playlist: [{ ItemId: ITEM, PlaylistItemId: PLAYLIST_ITEM }] } } }));
-      }
-      return reply.code(204).send();
-    }
+    if (url.pathname.startsWith("/SyncPlay/")) throw new Error("Upstream SyncPlay authority must never be invoked");
     const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
     if (url.pathname === "/UserItems/Resume" || url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
     if (url.pathname === "/Items/Latest" || url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
@@ -127,7 +118,7 @@ beforeEach(async () => {
     if (url.pathname.endsWith("/0.ts")) return reply.type("video/mp2t").send(Buffer.from("segment"));
     if (url.pathname === "/Sessions") return [{ Id: "other-session", DeviceId: "other" }, { Id: nativeSessionId({ deviceId: device(authorization) } as NativeViewer), NowPlayingItem: { Id: ITEM, Name: "Test movie" }, PlayState: { PositionTicks: 50_000_000, IsPaused: false } }];
     if (url.pathname.startsWith("/Sessions/")) return reply.code(204).send();
-    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true, EnableLiveTvAccess: true, EnableLiveTvManagement: true, EnableMediaPlayback: true, EnableContentDownloading: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
+    return { Id: USER, Name: "shared", Policy: { IsAdministrator: true, EnableLiveTvAccess: true, EnableLiveTvManagement: true, EnableMediaPlayback: !denyPlayback, EnableContentDownloading: true }, AccessToken: TOKEN, RequestedUser: url.searchParams.get("UserId") };
   } });
   upstreamAddress = await upstream.listen({ host: "127.0.0.1", port: 0 });
   const env = loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", JELLYFIN_DEFAULT_SERVER_URL: upstreamAddress, DATABASE_URL: "file:/tmp/native-unused.db" });
@@ -175,13 +166,21 @@ async function launch(who?: Awaited<ReturnType<typeof actor>>) {
 async function connect(data: Awaited<ReturnType<typeof launch>>["data"]) {
   const socket = new WebSocket(`${appAddress.replace("http:", "ws:")}${data.baseUrl}/socket?ApiKey=ignored-native-token&api_key=ignored-legacy-token`);
   await once(socket, "open");
+  await eventually(() => service.viewers.get(data.accessToken)?.joined === true);
   return socket;
+}
+
+async function setPlaybackQueue(current: Awaited<ReturnType<typeof launch>>, ids = [ITEM], paused = true) {
+  const { snapshot } = await service.playback.get(current.viewer);
+  return service.playback.submit(current.viewer, { type: "setQueue", epoch: snapshot.epoch,
+    id: randomUUID(), sequence: snapshot.revision + 1, expectedQueueRevision: snapshot.queueRevision,
+    issuedAt: Date.now(), queue: ids.map(itemId => ({ id: randomUUID(), itemId })), index: ids.length ? 0 : -1,
+    positionTicks: 0, paused });
 }
 
 async function disconnectRenderer(current: Awaited<ReturnType<typeof launch>>) {
   const socket = await connect(current.data);
-  expect((await app.inject({ method: "POST", url: `${current.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } })).statusCode).toBe(204);
-  await eventually(() => current.viewer.joined);
+  await setPlaybackQueue(current, [ITEM]);
   expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: current.owner.headers,
     payload: { connectionId: "connection", route: `#/details?id=${ITEM}&serverId=server`, sequence: 1 } })).statusCode).toBe(200);
   socket.terminate();
@@ -199,7 +198,7 @@ describe("native Jellyfin gateway", () => {
     expect(service.get(replacement.owner.session)?.context.instanceId).toBe("popped-out-instance");
     expect(service.get(previous.owner.session)).toBeUndefined();
     expect(service.parties.get(replacement.viewer.partyId)?.queueItemIds).toEqual([ITEM]);
-    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+    expect(calls.filter(call => call.path.startsWith("/SyncPlay/"))).toHaveLength(0);
     expect(calls.filter(call => ["/SyncPlay/SetNewQueue", "/SyncPlay/Stop", "/SyncPlay/Unpause"].includes(call.path))).toHaveLength(0);
     expect((await app.inject({ url: `${previous.data.baseUrl}/Users/Me` })).statusCode).toBe(401);
     expect((await app.inject({ method: "PUT", url: "/api/native/restore", headers: previous.owner.headers,
@@ -210,7 +209,6 @@ describe("native Jellyfin gateway", () => {
   it("waits briefly for the prior renderer's natural socket close when the replacement arrives first", async () => {
     const previous = await launch();
     const socket = await connect(previous.data);
-    expect((await app.inject({ method: "POST", url: `${previous.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } })).statusCode).toBe(204);
     await eventually(() => previous.viewer.joined);
     const next = await actor("viewer-1", "popout-arrived-first");
     const binding = service.bind(next.session, "connection");
@@ -220,7 +218,7 @@ describe("native Jellyfin gateway", () => {
     socket.terminate();
     expect((await binding).id).toBe(previous.viewer.partyId);
     expect(previous.viewer.revoked).toBe(true);
-    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+    expect(calls.filter(call => call.path.startsWith("/SyncPlay/"))).toHaveLength(0);
   });
 
   it("replaces a disconnected renderer within the same instance and ignores out-of-order route saves", async () => {
@@ -275,7 +273,7 @@ describe("native Jellyfin gateway", () => {
     const third = await launch(await actor("viewer-1", "third-instance"));
     expect(third.viewer.partyId).not.toBe(first.viewer.partyId);
     expect(third.viewer.partyId).not.toBe(second.viewer.partyId);
-    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(3);
+    expect(service.parties.size).toBe(3);
   });
 
   it("allows only the newest renderer to save navigation while an older document still has an open socket", async () => {
@@ -315,13 +313,10 @@ describe("native Jellyfin gateway", () => {
     await first.viewer.socketCleanup;
     await disconnectRenderer(second);
     const next = await actor("viewer-1", "popped-out-instance");
-    const originalFetch = service.dependencies.fetch;
+    const originalRevoke = service.revoke.bind(service);
     let release!: () => void;
     const blocked = new Promise<void>(resolve => { release = resolve; });
-    service.dependencies.fetch = vi.fn(async (target, path, init) => {
-      if (path === "/SyncPlay/Leave") await blocked;
-      return originalFetch(target, path, init);
-    });
+    vi.spyOn(service, "revoke").mockImplementation(async viewer => { await originalRevoke(viewer); await blocked; });
     const handoff = service.bind(next.session, "connection");
     try {
       await eventually(() => first.viewer.revoked);
@@ -339,7 +334,7 @@ describe("native Jellyfin gateway", () => {
     expect((await app.inject({ method: "POST", url: "/api/party", headers: denied.headers, payload: { connectionId: "connection" } })).statusCode).toBe(502);
     expect(service.get(previous.owner.session)?.id).toBe(previous.viewer.partyId);
     expect((await app.inject({ url: "/api/native/restore?connectionId=connection" })).statusCode).toBe(401);
-    expect(calls.filter(call => call.path === "/SyncPlay/New")).toHaveLength(1);
+    expect(calls.filter(call => call.path.startsWith("/SyncPlay/"))).toHaveLength(0);
   });
 
   it("rejects credential-bearing routes and unverified logout without clearing a valid checkpoint", async () => {
@@ -377,7 +372,7 @@ describe("native Jellyfin gateway", () => {
     expect(JSON.stringify(data)).not.toContain(TOKEN);
     expect(data.accessToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     const read = await app.inject({ url: "/api/party", headers: owner.headers });
-    expect(read.json().party.groupId).toBe(GROUP);
+    expect(read.json().party.groupId).toBe(data.groupId);
     const native = await app.inject({ url: `${data.baseUrl}/Users/Me?UserId=another&api_key=stolen` });
     expect(native.statusCode).toBe(200);
     expect(native.json().RequestedUser).toBe(USER);
@@ -469,10 +464,10 @@ describe("native Jellyfin gateway", () => {
 
   it("never exposes other groups or accepts a new native group", async () => {
     const { data } = await launch();
-    expect((await app.inject({ url: `${data.baseUrl}/SyncPlay/List` })).json()).toEqual([expect.objectContaining({ GroupId: GROUP })]);
+    expect((await app.inject({ url: `${data.baseUrl}/SyncPlay/List` })).statusCode).toBe(403);
     expect((await app.inject({ url: `${data.baseUrl}/SyncPlay/${ITEM}` })).statusCode).toBe(403);
     expect((await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/New`, payload: {} })).statusCode).toBe(403);
-    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: ITEM } })).statusCode).toBe(409);
+    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: ITEM } })).statusCode).toBe(403);
   });
 
   it("checks item visibility before anonymous-capable images and media", async () => {
@@ -581,8 +576,9 @@ describe("native Jellyfin gateway", () => {
     expect(list.body).not.toContain("other-session");
   });
 
-  it("authenticates before upgrading, joins after upstream readiness, and leaves on abrupt disconnect", async () => {
-    const { data, viewer } = await launch();
+  it("authenticates before upgrading, joins the Activity coordinator and reconnects without changing its timeline", async () => {
+    const current = await launch();
+    const { data, viewer } = current;
     const deniedStatus = await new Promise<number>((resolve, reject) => {
       const denied = new WebSocket(`${appAddress.replace("http:", "ws:")}/jf/invalid/socket`);
       denied.on("unexpected-response", (_request, response) => { resolve(response.statusCode!); response.resume(); denied.terminate(); });
@@ -592,21 +588,74 @@ describe("native Jellyfin gateway", () => {
     expect(deniedStatus).toBe(401);
     const socket = await connect(data);
     expect(upstreamSockets.has(data.deviceId)).toBe(true);
-    const joined = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: "wrong" } });
-    expect(joined.statusCode).toBe(204);
-    expect(calls.find((c) => c.path === "/SyncPlay/Join")?.body).toEqual({ GroupId: GROUP });
-    await eventually(() => service.parties.get(viewer.partyId)?.currentPlaylistItemId === PLAYLIST_ITEM);
+    await setPlaybackQueue(current, [ITEM, PLAYLIST_ITEM]);
     await service.command(viewer, "next");
-    expect(calls.at(-1)?.body).toEqual({ PlaylistItemId: PLAYLIST_ITEM });
-    expect(await service.command(viewer, "now")).toMatchObject({ title: "Test movie", positionSeconds: 5, isPaused: false });
-    await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
-    expect(calls.filter((c) => c.path === "/SyncPlay/Join")).toHaveLength(1);
+    const state = await service.playback.get(viewer);
+    expect(state.snapshot.index).toBe(1);
+    expect(await service.command(viewer, "now")).toMatchObject({ itemId: PLAYLIST_ITEM, isPaused: false });
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
     socket.terminate();
-    await eventually(() => calls.some((c) => c.path === "/SyncPlay/Leave" && device(c.authorization) === data.deviceId));
-    expect(viewer.joined).toBe(false);
+    await eventually(() => !viewer.joined && viewer.sockets === 0);
     const reconnected = await connect(data);
-    expect((await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } })).statusCode).toBe(204);
+    const resumed = await service.playback.get(viewer);
+    expect(resumed.snapshot.revision).toBe(state.snapshot.revision);
+    expect(resumed.snapshot.index).toBe(1);
     reconnected.terminate();
+  });
+
+  it("broadcasts ordered socket commands, acknowledges a retry once and filters upstream SyncPlay events", async () => {
+    const first = await launch();
+    const second = await launch(await actor("viewer-2"));
+    const one = await connect(first.data);
+    const two = await connect(second.data);
+    const oneFrames: Array<{ MessageType: string; Data: Record<string, unknown> }> = [];
+    const twoFrames: typeof oneFrames = [];
+    one.on("message", value => oneFrames.push(JSON.parse(value.toString())));
+    two.on("message", value => twoFrames.push(JSON.parse(value.toString())));
+    const { snapshot } = await service.playback.get(first.viewer);
+    const command = { type: "setQueue", epoch: snapshot.epoch, id: randomUUID(), sequence: 1,
+      expectedQueueRevision: 0, issuedAt: Date.now(), queue: [{ id: randomUUID(), itemId: ITEM }],
+      index: 0, positionTicks: 10_000_000, paused: true };
+    one.send(JSON.stringify({ MessageType: "ActivityPlaybackCommand", Data: command }));
+    await eventually(() => oneFrames.some(frame => frame.MessageType === "ActivityPlaybackState" && Boolean(frame.Data.ack))
+      && twoFrames.some(frame => frame.MessageType === "ActivityPlaybackState"));
+    const state = await service.playback.get(first.viewer);
+    expect(state.snapshot.revision).toBe(1);
+    expect(state.snapshot.queue).toEqual(command.queue);
+    expect(oneFrames.find(frame => frame.Data.ack)?.Data).toMatchObject({ clientId: first.data.deviceId, ack: { id: command.id, duplicate: false } });
+    expect(twoFrames.find(frame => frame.MessageType === "ActivityPlaybackState")?.Data).toMatchObject({ clientId: second.data.deviceId });
+    expect(twoFrames.find(frame => frame.MessageType === "ActivityPlaybackState")?.Data).not.toHaveProperty("ack");
+    one.send(JSON.stringify({ MessageType: "ActivityPlaybackCommand", Data: command }));
+    await eventually(() => oneFrames.some(frame => (frame.Data.ack as { duplicate?: boolean } | undefined)?.duplicate === true));
+    expect((await service.playback.get(first.viewer)).snapshot.revision).toBe(1);
+    upstreamSockets.get(first.data.deviceId)!.send(JSON.stringify({ MessageType: "SyncPlayCommand", Data: { GroupId: first.data.groupId, Command: "Pause" } }));
+    one.send(JSON.stringify({ MessageType: "ActivityPlaybackCommand", Data: { ...command, id: "malformed", secret: TOKEN } }));
+    await eventually(() => oneFrames.some(frame => frame.MessageType === "ActivityPlaybackError"));
+    expect(oneFrames.find(frame => frame.MessageType === "ActivityPlaybackError")?.Data).toMatchObject({ id: "malformed", code: "activity_invalid_command" });
+    expect(oneFrames.some(frame => frame.MessageType === "SyncPlayCommand")).toBe(false);
+    expect(JSON.stringify([...oneFrames, ...twoFrames])).not.toContain(TOKEN);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
+    one.terminate(); two.terminate();
+  });
+
+  it("denies a socket queue mutation without exposing inaccessible item data or changing playback", async () => {
+    const current = await launch();
+    const socket = await connect(current.data);
+    const frames: Array<{ MessageType: string; Data: Record<string, unknown> }> = [];
+    socket.on("message", value => frames.push(JSON.parse(value.toString())));
+    const { snapshot } = await service.playback.get(current.viewer);
+    const command = { type: "setQueue", epoch: snapshot.epoch, id: randomUUID(), sequence: 1,
+      expectedQueueRevision: 0, issuedAt: Date.now(), queue: [{ id: randomUUID(), itemId: DENIED }],
+      index: 0, positionTicks: 0, paused: false };
+    socket.send(JSON.stringify({ MessageType: "ActivityPlaybackCommand", Data: command }));
+    await eventually(() => frames.some(frame => frame.MessageType === "ActivityPlaybackError"));
+    expect(frames.find(frame => frame.MessageType === "ActivityPlaybackError")?.Data).toMatchObject({
+      id: command.id, code: "native_item_denied", snapshot: { revision: 0, queue: [] }
+    });
+    expect(JSON.stringify(frames)).not.toContain(TOKEN);
+    expect(JSON.stringify(frames)).not.toContain(DENIED);
+    expect((await service.playback.get(current.viewer)).snapshot.queue).toEqual([]);
+    socket.terminate();
   });
 
   it("revokes HTTP, live socket, and active media immediately on logout", async () => {
@@ -634,12 +683,14 @@ describe("native Jellyfin gateway", () => {
   });
 
   it("denies a queue mutation if any party member lacks item access", async () => {
-    const { data } = await launch();
+    const first = await launch();
+    const socket = await connect(first.data);
     const second = await launch(await actor("viewer-2"));
     deniedForUser.add(second.data.userId);
-    const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`, payload: { PlayingQueue: [ITEM], PlayingItemPosition: 0 } });
-    expect(result.statusCode).toBe(403);
-    expect(calls.some((c) => c.path === "/SyncPlay/SetNewQueue")).toBe(false);
+    await expect(setPlaybackQueue(first, [ITEM])).rejects.toMatchObject({ code: "native_item_denied" });
+    expect((await service.playback.get(first.viewer)).snapshot.queue).toEqual([]);
+    expect(calls.some(c => c.path.startsWith("/SyncPlay/"))).toBe(false);
+    socket.terminate();
   });
 
   it("coalesces simultaneous image access checks without sharing them across viewers", async () => {
@@ -675,65 +726,70 @@ describe("native Jellyfin gateway", () => {
 
   it("checks a long queue with bounded concurrency and all viewer permissions before changing playback", async () => {
     const first = await launch();
+    const socket = await connect(first.data);
     const second = await launch(await actor("viewer-2"));
     itemDelay = 20;
     const ids = Array.from({ length: 24 }, (_, index) => (index + 100).toString(16).padStart(32, "0"));
-    const mutation = app.inject({ method: "POST", url: `${first.data.baseUrl}/SyncPlay/SetNewQueue`, payload: { PlayingQueue: ids, PlayingItemPosition: 0 } });
-    const result = await mutation;
-    expect(result.statusCode).toBe(204);
+    await setPlaybackQueue(first, ids);
     expect(maxItemChecks).toBeGreaterThan(1);
     expect(maxItemChecks).toBeLessThanOrEqual(8);
-    const checks = calls.filter((call) => /^\/Users\/[^/]+\/Items\/[a-f\d]+$/.test(call.path));
+    const checks = calls.filter(call => /^\/Users\/[^/]+\/Items\/[a-f\d]+$/.test(call.path));
     expect(checks).toHaveLength(48);
     for (const user of [first.data.userId, second.data.userId]) {
-      expect(checks.filter((call) => call.path.startsWith(`/Users/${user}/`))).toHaveLength(24);
+      expect(checks.filter(call => call.path.startsWith(`/Users/${user}/`))).toHaveLength(24);
     }
-    expect(calls.at(-1)?.path).toBe("/SyncPlay/SetNewQueue");
+    expect((await service.playback.get(first.viewer)).snapshot.queue.map(item => item.itemId)).toEqual(ids);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
     expect(activeItemChecks).toBe(0);
+    socket.terminate();
   });
 
-  it("checks a late joiner's existing queue concurrently before joining native SyncPlay", async () => {
-    const current = await launch();
+  it("checks a late joiner's existing queue concurrently before subscribing to the Activity timeline", async () => {
+    const first = await launch();
+    const firstSocket = await connect(first.data);
     const ids = Array.from({ length: 24 }, (_, index) => (index + 100).toString(16).padStart(32, "0"));
-    service.parties.get(current.viewer.partyId)!.queueItemIds = ids;
+    await setPlaybackQueue(first, ids);
+    const current = await launch(await actor("viewer-2"));
     itemDelay = 20;
     const socket = await connect(current.data);
-    try {
-      const result = await app.inject({ method: "POST", url: `${current.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
-      expect(result.statusCode).toBe(204);
-      expect(maxItemChecks).toBeGreaterThan(1);
-      expect(maxItemChecks).toBeLessThanOrEqual(8);
-      expect(calls.filter((call) => call.path.startsWith(`/Users/${current.data.userId}/Items/`))).toHaveLength(24);
-      expect(calls.at(-1)?.path).toBe("/SyncPlay/Join");
-      expect(activeItemChecks).toBe(0);
-    } finally { socket.terminate(); }
+    expect(maxItemChecks).toBeGreaterThan(1);
+    expect(maxItemChecks).toBeLessThanOrEqual(8);
+    expect(calls.filter(call => call.path.startsWith(`/Users/${current.data.userId}/Items/`))).toHaveLength(24);
+    expect(current.viewer.joined).toBe(true);
+    expect(activeItemChecks).toBe(0);
+    socket.terminate(); firstSocket.terminate();
   });
 
-  it("distinguishes invalid, empty and oversized native queues without forwarding any mutation", async () => {
-    const { data } = await launch();
-    for (const [payload, code] of [
-      [{ PlayingQueue: "private-body-value" }, "native_invalid_queue"],
-      [{ PlayingQueue: [null] }, "native_invalid_queue"],
-      [{ PlayingQueue: [] }, "native_queue_empty"],
-      [{ PlayingQueue: Array(501).fill(ITEM) }, "native_queue_too_large"]
-    ] as const) {
-      const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`, payload });
+  it("rejects malformed and oversized Activity queues without forwarding a mutation or leaking input", async () => {
+    const current = await launch();
+    const socket = await connect(current.data);
+    const { snapshot } = await service.playback.get(current.viewer);
+    const envelope = { type: "setQueue", epoch: snapshot.epoch, id: randomUUID(), sequence: 1,
+      expectedQueueRevision: 0, issuedAt: Date.now(), index: 0, positionTicks: 0, paused: false };
+    for (const queue of ["private-body-value", [null], [], Array(501).fill({ id: ITEM, itemId: ITEM })]) {
+      const result = await app.inject({ method: "POST", url: `${current.data.baseUrl}/Activity/Playback`, payload: { ...envelope, queue } });
       expect(result.statusCode).toBe(400);
-      expect(result.json()).toMatchObject({ error: { code } });
-      expect(result.headers["x-application-error-code"]).toBe(code);
       expect(result.body).not.toContain("private-body-value");
-      expect(result.body).not.toContain(ITEM);
+      expect(result.body).not.toContain(TOKEN);
     }
-    expect(calls.some((c) => c.path === "/SyncPlay/SetNewQueue")).toBe(false);
+    expect((await service.playback.get(current.viewer)).snapshot.queue).toEqual([]);
+    expect(calls.some(c => c.path.startsWith("/SyncPlay/"))).toBe(false);
+    socket.terminate();
   });
 
-  it("forwards the native JSON queue format used by desktop and mobile clients", async () => {
-    const { data } = await launch();
-    const payload = { PlayingQueue: Array(37).fill(ITEM), PlayingItemPosition: 0, StartPositionTicks: 0 };
-    const result = await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/SetNewQueue`,
+  it("accepts JSON Activity queues with charset and preserves repeated media as distinct entries", async () => {
+    const current = await launch();
+    const socket = await connect(current.data);
+    const { snapshot } = await service.playback.get(current.viewer);
+    const queue = Array.from({ length: 37 }, () => ({ id: randomUUID(), itemId: ITEM }));
+    const payload = { type: "setQueue", epoch: snapshot.epoch, id: randomUUID(), sequence: 1,
+      expectedQueueRevision: 0, issuedAt: Date.now(), queue, index: 0, positionTicks: 0, paused: true };
+    const result = await app.inject({ method: "POST", url: `${current.data.baseUrl}/Activity/Playback`,
       headers: { "content-type": "application/json; charset=UTF-8" }, payload: JSON.stringify(payload) });
-    expect(result.statusCode).toBe(204);
-    expect(calls.find((c) => c.path === "/SyncPlay/SetNewQueue")?.body).toEqual(payload);
+    expect(result.statusCode).toBe(200);
+    expect(result.json().snapshot.queue).toEqual(queue);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
+    socket.terminate();
   });
 
   it("fails closed when Discord membership renewal fails", async () => {
@@ -746,7 +802,6 @@ describe("native Jellyfin gateway", () => {
   it("revokes a disconnected capability after its grace period instead of retaining a zombie", async () => {
     const { data, viewer } = await launch();
     const socket = await connect(data);
-    await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
     socket.terminate();
     await eventually(() => viewer.lastSocketClose > 0);
     const now = Date.now();
@@ -761,7 +816,7 @@ describe("native Jellyfin gateway", () => {
     clock.mockReturnValue(now + 242_000);
     await service.sweep();
     expect(service.parties.size).toBe(0);
-    expect(calls.filter((c) => c.path === "/SyncPlay/Leave").length).toBeGreaterThanOrEqual(2);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
   });
 
   it("expires unused launch capabilities even while the cleanup timer verifies membership", async () => {
@@ -774,10 +829,11 @@ describe("native Jellyfin gateway", () => {
     expect(service.viewers.has(data.accessToken)).toBe(false);
   });
 
-  it("disconnecting the stored connection revokes capabilities and closes its native group", async () => {
+  it("disconnecting the stored connection revokes its capability without deleting the party", async () => {
     const { viewer, data } = await launch();
     await service.revokeConnection(viewer.discordUserId, viewer.connection.id);
-    expect(service.parties.size).toBe(0);
+    expect(service.parties.size).toBe(1);
+    expect(viewer.revoked).toBe(true);
     expect((await app.inject({ url: `${data.baseUrl}/Users/Me` })).statusCode).toBe(401);
   });
 
@@ -809,46 +865,40 @@ describe("native Jellyfin gateway", () => {
     expect((await app.inject({ url: `${b.data.baseUrl}/Users/Me` })).statusCode).toBe(200);
   });
 
-  it("cleans up a group if its connection is revoked while group creation is in flight", async () => {
+  it("cannot bind a party when its account is revoked during connection resolution", async () => {
     const owner = await actor();
     let current = true;
     service.dependencies.current = vi.fn(() => { if (!current) throw new Error("connection changed"); });
-    const send = service.dependencies.fetch;
-    service.dependencies.fetch = async (target, path, init) => {
-      const response = await send(target, path, init);
-      if (String(path) === "/SyncPlay/New") current = false;
-      return response;
-    };
+    const resolve = service.dependencies.resolve;
+    service.dependencies.resolve = async (...args) => { const result = await resolve(...args); current = false; return result; };
     const response = await app.inject({ method: "POST", url: "/api/party", headers: owner.headers, payload: { connectionId: "connection" } });
     expect(response.statusCode).toBe(502);
     expect(service.parties.size).toBe(0);
     expect(service.viewers.size).toBe(0);
-    expect(calls.some((call) => call.path === "/SyncPlay/Leave")).toBe(true);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
   });
 
   it("cannot publish a replacement capability from a connection revoked during old-viewer cleanup", async () => {
     const { owner, viewer } = await launch();
     let current = true;
     service.dependencies.current = vi.fn(() => { if (!current) throw new Error("connection changed"); });
-    const send = service.dependencies.fetch;
-    service.dependencies.fetch = async (target, path, init) => {
-      const response = await send(target, path, init);
-      if (String(path) === "/SyncPlay/Leave") current = false;
-      return response;
-    };
+    const revoke = service.revoke.bind(service);
+    vi.spyOn(service, "revoke").mockImplementation(async value => { await revoke(value); current = false; });
     await expect(service.launch(owner.session, "connection", viewer.clientDeviceId)).rejects.toThrow("connection changed");
     expect(service.viewers.size).toBe(0);
   });
 
-  it("denies a late join before native group mutation if its account cannot read the current queue", async () => {
+  it("denies a late subscriber that cannot read the current queue without disturbing existing viewers", async () => {
     const first = await launch();
-    service.parties.get(first.viewer.partyId)!.queueItemIds = [ITEM];
+    const socket = await connect(first.data);
+    await setPlaybackQueue(first, [ITEM]);
     const second = await launch(await actor("viewer-2"));
     deniedForUser.add(second.data.userId);
-    const socket = await connect(second.data);
-    const response = await app.inject({ method: "POST", url: `${second.data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
+    const response = await app.inject({ url: `${second.data.baseUrl}/Activity/Playback` });
     expect(response.statusCode).toBe(403);
-    expect(calls.some((call) => call.path === "/SyncPlay/Join")).toBe(false);
+    expect(second.viewer.joined).toBe(false);
+    expect((await service.playback.get(first.viewer)).snapshot.queue[0]?.itemId).toBe(ITEM);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
     socket.terminate();
   });
 
@@ -898,26 +948,28 @@ describe("native Jellyfin gateway", () => {
 
 
 describe("native command episode queues and account permissions", () => {
-  it("expands a Discord episode selection using Jellyfin's ordered episode list", async () => {
+  it("expands a Discord episode selection using Jellyfin's ordered episode list and the same coordinator", async () => {
     const { data, viewer } = await launch();
     const socket = await connect(data);
-    await app.inject({ method: "POST", url: `${data.baseUrl}/SyncPlay/Join`, payload: { GroupId: GROUP } });
     episodeMode = true;
     await service.command(viewer, "select", { itemIds: [ITEM] });
-    expect([...calls].reverse().find((call) => call.path === "/SyncPlay/SetNewQueue")?.body).toEqual({
-      PlayingQueue: [ITEM, PLAYLIST_ITEM], PlayingItemPosition: 0, StartPositionTicks: 0
-    });
-    expect(calls.find((call) => call.path === `/Shows/${GROUP}/Episodes`)?.query.StartItemId).toBe(ITEM);
+    const { snapshot } = await service.playback.get(viewer);
+    expect(snapshot.queue.map(item => item.itemId)).toEqual([ITEM, PLAYLIST_ITEM]);
+    expect(snapshot.index).toBe(0);
+    expect(snapshot.paused).toBe(false);
+    expect(calls.find(call => call.path === `/Shows/${GROUP}/Episodes`)?.query.StartItemId).toBe(ITEM);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
     socket.close();
   });
 
-  it("explains a missing native group permission without disclosing upstream data", async () => {
-    const who = await actor();
-    denyGroupCreation = true;
-    const result = await app.inject({ method: "POST", url: "/api/party", headers: who.headers, payload: { connectionId: "connection" } });
+  it("rejects coordinator access when Jellyfin disables media playback without disclosing upstream data", async () => {
+    const current = await launch();
+    denyPlayback = true;
+    const result = await app.inject({ url: `${current.data.baseUrl}/Activity/Playback` });
     expect(result.statusCode).toBe(403);
-    expect(result.json().error.code).toBe("syncplay_create_not_allowed");
-    expect(result.json().error.message).toContain("administrator");
+    expect(result.json().error.code).toBe("native_playback_denied");
     expect(result.body).not.toContain(TOKEN);
+    expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
   });
+
 });

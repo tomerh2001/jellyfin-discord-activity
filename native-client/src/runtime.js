@@ -7,7 +7,6 @@ import { appRouter } from 'components/router/appRouter';
 import viewContainer from 'components/viewContainer';
 import { queryClient } from 'utils/query/queryClient';
 import { setUserInfo } from 'scripts/settings/userSettings';
-import SyncPlay from 'plugins/syncPlay/core';
 import Events from 'utils/events';
 import toast from 'components/toast/toast';
 import { installPlaybackPermission } from './playbackPermission';
@@ -19,6 +18,8 @@ import { observeNavigation, restoredNavigation } from './navigation';
 import { createActivityController, preferredAccount } from './controller';
 import { beginAccountViewChange, finishAccountViewChange } from './accountViewState';
 import { showParticipants, showLoading, showStartupError, mountPlaybackPermission } from './ui';
+import { createActivityPlaybackClient } from './activityPlaybackClient';
+import { createNativePlaybackAdapter } from './nativePlaybackAdapter';
 import './style.css';
 
 let controller;
@@ -27,7 +28,7 @@ let apiClient;
 let ready = false;
 let closed = false;
 let switching = false;
-let joining;
+let partyPlayback;
 let reconnectTimer;
 let pollTimer;
 let loginData;
@@ -52,20 +53,11 @@ async function stopNative() {
     switching = true;
     resetPlaybackPermission();
     clearTimeout(reconnectTimer);
-    joining = undefined;
     stopClient();
     stopClient = () => {};
     await setUserInfo(null, null);
     if (apiClient !== stoppingClient) return;
-    // Unbind shared controls before stopping this device. Changing accounts must
-    // never send Stop to the other people watching the same group.
-    if (ready && SyncPlay.Manager.isSyncPlayEnabled()) SyncPlay.Manager.disableSyncPlay();
-    if (ready && SyncPlay.Manager.getPlayerWrapper()) {
-        SyncPlay.Manager.getPlaybackCore().clearScheduledCommand();
-        const clock = SyncPlay.Manager.getTimeSyncCore().timeSyncServer;
-        clock?.stopPing();
-        clock?.resetMeasurements();
-    }
+    // stopClient restores local controls before account cleanup stops this device.
     if (ready) await playbackManager.stop();
     stoppingClient?.closeWebSocket();
     if (apiClient === stoppingClient) videoPresentation?.stop();
@@ -118,6 +110,10 @@ async function installLaunch(next, connection, isCurrent) {
         if (!isCurrent()) { installedClient.closeWebSocket(); return; }
         if (result.State !== 'SignedIn') throw new Error('Could not connect to your Jellyfin account. Sign in to try again.');
         ServerConnections.firstConnection = true;
+        if (ready) {
+            await watchClient();
+            if (!isCurrent()) return;
+        }
         switching = false;
         flushSync(finishAccountViewChange);
         if (ready) {
@@ -125,7 +121,6 @@ async function installLaunch(next, connection, isCurrent) {
             await appRouter.show(route);
             if (!isCurrent()) return;
             watchNavigation(connection, route);
-            watchClient();
         } else window.location.hash = route;
     } catch (error) {
         if (isCurrent()) {
@@ -256,21 +251,11 @@ export async function openAccounts() {
     else window.location.hash = '/login';
 }
 
-async function joinParty() {
-    const client = apiClient;
-    if (closed || switching || joining?.client === client || !client?.isWebSocketOpen()) return;
-    const attempt = { client, launch };
-    joining = attempt;
-    try {
-        const response = await client.joinSyncPlayGroup({ GroupId: attempt.launch.groupId });
-        if (response && !response.ok) throw new Error('Join failed');
-    } catch {
-        if (joining === attempt && apiClient === client) reportError('Could not join the watch party. Reconnect to try again.');
-    } finally { if (joining === attempt) joining = undefined; }
-}
-
 function watchClient() {
     const client = apiClient;
+    const playback = createNativePlaybackAdapter({ playbackManager, events: Events, apiClient: client,
+        baseUrl: launch.baseUrl, createClient: createActivityPlaybackClient, onError: reportError });
+    partyPlayback = playback;
     const discord = controller.session.discord;
     const presence = observeWatchPresence({ document, playbackManager, events: Events,
         publisher: broker.createWatchPresence(discord),
@@ -279,7 +264,7 @@ function watchClient() {
             && Date.parse(controller.session.exchange.expiresAt) > Date.now() });
     clearPresence = presence.clear;
     const stopQueue = observeQueueFailures(Events, client, launch.baseUrl, window.location.origin, reportError);
-    const opened = () => { clearTimeout(reconnectTimer); presence.refresh(); void joinParty(); };
+    const opened = () => { clearTimeout(reconnectTimer); presence.refresh(); };
     const disconnected = () => {
         if (switching || closed) return;
         presence.clear();
@@ -296,6 +281,8 @@ function watchClient() {
     Events.on(client, 'websocketopen', opened);
     Events.on(client, 'websocketclose', disconnected);
     stopClient = () => {
+        playback.dispose();
+        if (partyPlayback === playback) partyPlayback = undefined;
         presence.dispose();
         clearPresence = () => {};
         stopQueue();
@@ -303,7 +290,7 @@ function watchClient() {
         Events.off(client, 'websocketclose', disconnected);
     };
     client.ensureWebSocket();
-    if (client.isWebSocketOpen()) void joinParty();
+    return playback.start();
 }
 
 export async function finishDiscordBootstrap() {
@@ -312,10 +299,13 @@ export async function finishDiscordBootstrap() {
     videoPresentation = observeVideoPresentation(document, value => value instanceof HTMLVideoElement, () => {});
     const stopped = () => { resetPlaybackPermission(); videoPresentation.stop(); };
     Events.on(playbackManager, 'playbackstop', stopped);
-    const stopPermission = installPlaybackPermission(window, () => SyncPlay.Manager.getLastPlaybackCommand(), mountPlaybackPermission);
+    const stopPermission = installPlaybackPermission(window, () => {
+        const state = partyPlayback?.getSnapshot();
+        return { Command: !state?.queue?.length ? 'Stop' : state.paused ? 'Pause' : 'Unpause' };
+    }, mountPlaybackPermission);
     resetPlaybackPermission = stopPermission.reset;
     onDocumentExit(window, () => { videoPresentation.dispose(); stopPermission(); Events.off(playbackManager, 'playbackstop', stopped); });
-    if (apiClient) watchClient();
+    if (apiClient) await watchClient();
     let polling = false;
     pollTimer = setInterval(async () => {
         if (closed || polling || switching || controller.busy || loginPending || logoutPending || !apiClient) return;

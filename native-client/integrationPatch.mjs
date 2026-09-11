@@ -27,10 +27,23 @@ ${indent}    videoElement.${operation}EventListener(event, this.onNativeFullscre
 ${indent}}`);
     }
 
+    // Browser orientation methods require their owning Screen receiver.
+    const orientation = 'src/components/playback/playbackorientation.js';
+    await replace(orientation, "const promise = lockOrientation('landscape');",
+        "const promise = lockOrientation.call(lockOrientation === window.screen.orientation?.lock ? window.screen.orientation : window.screen, 'landscape');");
+    await replace(orientation, '                unlockOrientation();',
+        '                unlockOrientation.call(unlockOrientation === window.screen.orientation?.unlock ? window.screen.orientation : window.screen);');
+
     // The Modern toolbar and video OSD share this native MUI control. Group
     // membership belongs to the verified Discord party, not a public group list.
     const syncButton = 'src/apps/modern/components/AppToolbar/SyncPlayButton.tsx';
     for (const statement of [
+        "import { SyncPlayUserAccessType } from '@jellyfin/sdk/lib/generated-client/models/sync-play-user-access-type';\n",
+        "import Badge from '@mui/material/Badge';\n",
+        "import { useSyncPlay } from 'apps/modern/features/syncPlay/hooks/useSyncPlay';\n",
+        "import { pluginManager } from 'components/pluginManager';\n",
+        "import { PluginType } from 'constants/pluginType';\n",
+        '    const { isActive } = useSyncPlay();\n',
         "import { QUERY_KEY, useSyncPlayGroups } from 'apps/modern/features/syncPlay/hooks/api/useSyncPlayGroups';\n",
         "import globalize from 'lib/globalize';\n",
         "import { queryClient } from 'utils/query/queryClient';\n",
@@ -59,7 +72,24 @@ ${indent}}`);
     await replace(syncButton, "<Tooltip title={globalize.translate('ButtonSyncPlay')}>", "<Tooltip title='Watch party'>");
     await replace(syncButton, "aria-label={globalize.translate('ButtonSyncPlay')}", "aria-label='Watch party'");
     await replace(syncButton, '                    aria-controls={ID}\n', '');
-    await replace(syncButton, 'invisible={!isActive && !isAvailable}', 'invisible={!isActive}');
+    await replace(syncButton,
+        `    if (
+        // SyncPlay not enabled for user
+        (user?.Policy && user.Policy.SyncPlayAccess === SyncPlayUserAccessType.None)
+        // SyncPlay plugin is not loaded
+        || pluginManager.ofType(PluginType.SyncPlay).length === 0
+    ) {`,
+        '    if (!user) {');
+    await replace(syncButton,
+        `                    <Badge
+                        color={isActive ? 'primary' : 'success'}
+                        badgeContent={1} // Use visibility of badge to indicate status
+                        invisible={!isActive && !isAvailable}
+                        variant='dot'
+                    >
+                        <Groups />
+                    </Badge>`,
+        '                    <Groups />');
     await replace(syncButton,
         `
             <AppSyncPlayMenu

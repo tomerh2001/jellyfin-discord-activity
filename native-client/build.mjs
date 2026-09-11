@@ -14,6 +14,7 @@ import { patchAccountView } from './accountPatch.mjs';
 import { patchLoginPage } from './loginPatch.mjs';
 import { patchAuthenticatedClient } from './authenticatedClientPatch.mjs';
 import { patchNativeViewLifecycle } from './viewLifecyclePatch.mjs';
+import { patchActivityPlayback } from './activityPlaybackPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -54,6 +55,7 @@ await patchModernPresentation(replace);
 await patchAccountView(replace);
 await patchLoginPage(replace);
 await patchAuthenticatedClient(replace);
+await patchActivityPlayback(replace);
 await writeFile(path.join(source, 'src/apps/legacy/controllers/session/login/index.js'), `import 'elements/emby-input/emby-input';
 import 'elements/emby-button/emby-button';
 import './login.scss';

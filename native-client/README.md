@@ -7,14 +7,14 @@ The upstream npm lockfile supplies dependency integrity. Output goes to `dist/`
 and the Activity API serves its `index.html` at the mapped origin's root.
 The native HashRouter owns navigation within the Activity document.
 
-The build applies a small integration patch before compiling the upstream source:
+The build applies reproducible integration patches before compiling the upstream source:
 
 - Jellyfin 12's upstream **Modern** application supplies the responsive desktop
   and mobile interface. The app selects its native desktop/mobile mode before
   the router initializes, so a stored display preference cannot select the old
   application. The old layout selector is removed from Modern preferences.
   Modern's own video page combines its MUI toolbar with Jellyfin's shared video
-  controller; seek previews, fullscreen and SyncPlay extend that same player.
+  controller; seek previews, fullscreen and Activity synchronization extend that same player.
   There is no iframe or separate playback interface.
 
 - The native document loads the [session library](../apps/activity-web/README.md)
@@ -30,7 +30,9 @@ The build applies a small integration patch before compiling the upstream source
 - The Modern toolbar's MUI SyncPlay button, also used by its video OSD,
   opens **Watch party** only when clicked. It shows the people in the current
   Discord Activity, their display names and avatars, and identifies the current
-  viewer as **You**. The only action is **Close**. Fullscreen stays with Jellyfin's
+  viewer as **You**. It remains available to signed-in viewers regardless of their
+  upstream SyncPlay permission or plugin state, and does not show a dormant
+  SyncPlay status badge. The only action is **Close**. Fullscreen stays with Jellyfin's
   player controls. The roster uses the Embedded App SDK's
   `getActivityInstanceConnectedParticipants` snapshot and
   `ACTIVITY_INSTANCE_PARTICIPANTS_UPDATE` events; an existing unused getter alone
@@ -51,8 +53,8 @@ The build applies a small integration patch before compiling the upstream source
   returns to login; it keeps the Discord session and other viewers connected.
   Every successful personal or community login installs a fresh native client
   and automatically joins the current Activity party after its socket opens.
-  Bootstrap can render login before an ApiClient exists; SyncPlay initializes
-  on the first authenticated client, then updates on later account changes.
+  Bootstrap can render login before an ApiClient exists. The Activity coordinator
+  connects once the authenticated native client and player plugins are ready.
 - The native ApiClient receives an opaque gateway capability, account and device
   identity. Real Jellyfin credentials remain on the broker. Native credentials
   are held in memory and service-worker registration is disabled.
@@ -65,17 +67,43 @@ The build applies a small integration patch before compiling the upstream source
   an in-memory QueryClientProvider, and its query module has no IndexedDB
   persister. Account replacement clears that document's query cache.
 - Jellyfin 12's SDK subscriptions own one WebSocket per native ApiClient. The
-  adapter bridges its status to the legacy player lifecycle methods used by
-  SyncPlay and the Activity, without opening a second connection. Identical
+  adapter bridges its status to the native player and Activity lifecycle,
+  without opening a second connection. Identical
   authentication metadata does not reconnect an unchanged capability. SDK and
   legacy subscribers share account ownership checks; unsubscribe, client close
   and replacement suppress late callbacks, and close disables SDK reconnection.
-- Native SyncPlay joins the Activity's mapped group after the WebSocket opens.
-  Reconnection joins that same group. A socket outage lasting 40 seconds asks the
-  document's controller for a fresh gateway launch, since disconnected
-  capabilities expire.
-  Native Jellyfin owns library browsing,
-  episode queues, playback, audio, subtitles, quality and synchronization.
+- The Activity owns one ordered playback timeline. Its `ActivityPlaybackCommand`,
+  `ActivityPlaybackState` and `ActivityPlaybackError` messages reuse that native
+  authenticated WebSocket. `/jf/:capability/Activity/Playback` supplies recovery
+  snapshots; the capability stays inside the native document and gateway.
+  Native SyncPlay group joins, commands and waiting callbacks are not used.
+  The gateway denies the old SyncPlay routes and events, so only the Activity
+  coordinator can control shared playback. A socket outage lasting 40 seconds
+  asks the document's controller for a fresh gateway launch.
+- Native Play still expands episodes, multipart media and intros before the
+  prepared queue enters Jellyfin's original stream-selection and reporting
+  pipeline. Each shared queue entry has its own ID, even when the same media
+  appears twice. Local play/pause and buffered seek effects run before the
+  command is sent; Next/Previous select an explicit queue entry immediately.
+  Matching acknowledgements do not replay the action. Personal audio, subtitles,
+  quality and volume remain with the native player. Repeat None/One/All is shared
+  through the native repeat control. Automatic advancement follows this shared
+  queue regardless of personal AutoNext preferences. Each ended callback belongs
+  to its captured queue revision; RepeatOne prepares the media again because the
+  native HTML player clears its source on ended. Simultaneous natural ends
+  quietly follow the accepted advancement; manual conflicts still show feedback.
+  Cached items are identified by
+  both shared entry ID and media ID, so an entry cannot retain a replaced movie.
+  Preparation selects that identity inside its own item array; a concurrent queue
+  insertion cannot substitute a different movie by shifting the latest index.
+- New viewers retrieve the current queue and timeline. Buffering remains local;
+  it does not issue a shared Pause. The adapter checks drift once per second
+  when ready: 250–1500 ms uses a 3% adjustment around the viewer's playback rate;
+  larger drift uses a seek with a three-second cooldown. Paused seeks stay paused.
+  Native fullscreen control events require a recent trusted media-control gesture
+  before becoming party commands; autoplay recovery and OS interruptions do not
+  become shared pauses. These thresholds require compiled-player and physical
+  device validation; see the [implementation and verification record](../docs/syncplay-responsiveness-plan.md).
 - If an accessible episode is absent from Jellyfin's expanded series response,
   playback keeps the originally selected episode rather than sending an empty
   queue. Other queue validation failures produce a native toast with fixed text;
@@ -90,7 +118,7 @@ The build applies a small integration patch before compiling the upstream source
   **Tap to play on this device**. The click calls that exact element's `play()` before any asynchronous
   work; a temporary silent audio probe cannot grant a different video element
   WebKit playback permission. This never sends a shared Unpause command, and it
-  restores a paused/stopped native group state after unlocking. The button stays
+  restores a paused/stopped Activity state after unlocking. The button stays
   available on failure and disappears when playback succeeds. Native
   `playbackstart` fires during preparation and cannot prove autoplay succeeded.
   The native video player's separate `unpause()` path also reports a rejected
@@ -110,9 +138,10 @@ The build applies a small integration patch before compiling the upstream source
   fullscreen button, F shortcut and double-click synchronously request document
   fullscreen, keeping Jellyfin's OSD and subtitle overlays visible. Where only
   Safari video fullscreen is available, the native player uses its exact video
-  element and tracks that element's fullscreen entry/exit events. Those listeners
+  element and tracks that element's fullscreen entry/exit events. Mobile orientation
+  methods retain their Screen or ScreenOrientation receiver. Those listeners
   are removed with the player. Unsupported requests and synchronous/asynchronous
-  refusals show fixed native toast feedback without changing playback or SyncPlay.
+  refusals show fixed native toast feedback without changing playback or the party.
   Discord's embedding policy can refuse fullscreen, and the Activity cannot force
   the outer Discord application window into fullscreen. SDK 2.5.0 has no command
   to override that policy. See [Discord SDK commands](https://github.com/discord/embedded-app-sdk/blob/v2.5.0/src/commands/index.ts),
@@ -122,8 +151,8 @@ The build applies a small integration patch before compiling the upstream source
   in, and can assign a new instance ID if the Activity was otherwise empty
   ([upstream report](https://github.com/discord/embedded-app-sdk/issues/202)).
   Fresh documents authenticate normally, recover the saved account, and restore
-  the last allowed browsing route from a short-lived server checkpoint. Native
-  SyncPlay supplies the queue, position and paused/playing state. Within the
+  the last allowed browsing route from a short-lived server checkpoint. The
+  Activity coordinator supplies the queue, position and paused/playing state. Within the
   same document, account reconnection retains the current browsing route; an
   explicit account change starts at that account's Home.
   Checkpoints are saved on native navigation, renewed while watching, and flushed
@@ -151,10 +180,17 @@ Joining checks both the server URL and identity. A saved preferred connection
 cannot replace an existing party. The login page uses that party's server and
 maps the operator's canonical default to its configured public address for
 presentation. To use another server, start another Activity. Account switching
-keeps the Discord SDK document alive. The adapter unbinds SyncPlay before stopping
+keeps the Discord SDK document alive. The adapter restores local controls before stopping
 only local playback, closes its socket, and clears native query and cached view
 state. That prevents a local account change from issuing a shared Stop or
 showing the previous account's cached library.
+
+Account changes also cancel queued native navigation and invalidate pending view
+imports, controller initialization and cached restoration. Cancelled initialized
+controllers receive cleanup once. A late account response or media-preparation
+response cannot reinstall the previous account, show its old page or start its
+previous item. A navigation cancelled before `viewshow` releases the router's
+pending promise and clears its delayed history push, so the login route can open.
 
 Launch commands and the configured entry point respond only to a user invocation
 and do not send an automatic channel invitation. Discord's native invitation and

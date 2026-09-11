@@ -36,10 +36,9 @@ const readRules = [
   new RegExp(`^/Audio/${ID}/(?:stream(?:\\.[a-z0-9]+)?|universal|master\\.m3u8|main\\.m3u8|hls(?:1)?/${ID}(?:/${ID})*/${ID}\\.[a-z0-9]+)$`, "i"),
   new RegExp(`^/MediaSegments/${ID}$`, "i"),
   new RegExp(`^/DisplayPreferences/${ID}$`, "i"),
-  /^\/Sessions$/i,
-  /^\/SyncPlay\/(?:List|[a-f0-9-]{32,36})$/i
+  /^\/Sessions$/i
 ];
-const syncActions = new Set(["join", "leave", "setnewqueue", "setplaylistitem", "removefromplaylist", "moveplaylistitem", "queue", "unpause", "pause", "stop", "seek", "buffering", "ready", "setignorewait", "nextitem", "previousitem", "setrepeatmode", "setshufflemode", "ping"]);
+
 
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -64,8 +63,6 @@ export function allowNativeRequest(viewer: NativeViewer, method: string, inputPa
     if (readRules.some((rule) => rule.test(path))) return path;
   }
   if (method === "POST") {
-    const sync = /^\/SyncPlay\/([a-z]+)$/i.exec(path);
-    if (sync && syncActions.has(sync[1]!.toLowerCase())) return path;
     if (new RegExp(`^/Items/${ID}/PlaybackInfo$`, "i").test(path)) return path;
     if (/^\/Sessions\/(?:Capabilities(?:\/Full)?|Playing(?:\/(?:Progress|Stopped))?)$/i.test(path)) return path;
     if (new RegExp(`^/DisplayPreferences/${ID}$`, "i").test(path)) return path;
@@ -109,14 +106,8 @@ function scopedBody(viewer: NativeViewer, value: unknown): unknown {
 
 export function nativeRequestBody(service: NativePartyService, viewer: NativeViewer, path: string, input: unknown): unknown {
   const body = scopedBody(viewer, input);
-  if (/^\/SyncPlay\/Join$/i.test(path)) return { GroupId: service.parties.get(viewer.partyId)!.groupId };
-  if (/^\/SyncPlay\//i.test(path) && body && typeof body === "object") {
-    // Current Jellyfin commands select their group by authenticated session. Never
-    // pass client group selectors through if future upstream APIs add one.
-    for (const key of Object.keys(record(body))) if (key.toLowerCase() === "groupid") delete record(body)[key];
-  }
   if (/^\/Sessions\/Capabilities(?:\/Full)?$/i.test(path)) {
-    return { ...record(body), SupportsMediaControl: false, SupportsRemoteControl: false, SupportsSync: true };
+    return { ...record(body), SupportsMediaControl: false, SupportsRemoteControl: false, SupportsSync: false };
   }
   return body;
 }
@@ -216,27 +207,6 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
     if (typeof itemId === "string" && itemId) await service.requireItem(viewer, itemId);
   }
   await service.authorize(viewer.capability);
-  if (/^\/SyncPlay\/Join$/i.test(path)) {
-    if (!viewer.sockets) throw new NativeError("native_socket_required", 409);
-    await service.requireViewerItems(viewer, service.parties.get(viewer.partyId)?.queueItemIds ?? []);
-    await service.authorize(viewer.capability);
-    if (!viewer.sockets) throw new NativeError("native_socket_required", 409);
-    // Jellyfin 10.11 incorrectly increments its user counter on repeated joins.
-    if (viewer.joined) return reply.code(204).send();
-  }
-  if (request.method === "POST" && /^\/SyncPlay\/(?:SetNewQueue|Queue)$/i.test(path)) {
-    const value = record(request.body);
-    const ids = value.PlayingQueue ?? value.ItemIds;
-    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) throw new NativeError("native_invalid_queue", 400);
-    await service.requirePartyItems(viewer, ids as string[]);
-    await service.authorize(viewer.capability);
-  }
-  const party = service.parties.get(viewer.partyId)!;
-  if (/^\/SyncPlay\/(?:List|[a-f0-9-]{32,36})$/i.test(path)) {
-    if (!path.toLowerCase().endsWith("/list") && path.split("/").pop() !== party.groupId) throw new NativeError("native_group_denied");
-    const data = await service.execute(viewer, "GET", `/SyncPlay/${party.groupId}`);
-    return sendNativeText(reply.type("application/json"), path.toLowerCase().endsWith("/list") ? [sanitizeNativeJson(viewer, data)] : sanitizeNativeJson(viewer, data));
-  }
   const controller = new AbortController();
   const abort = () => controller.abort();
   viewer.aborters.add(abort);
@@ -266,14 +236,11 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
         request.log.warn({ code: "jellyfin_request_failed", upstreamStatus: response.status, ...nativeQueueShape(request) }, "Native queue request rejected by Jellyfin");
       }
       if (response.status === 401) await service.revoke(viewer);
-      if (response.status === 403 && /^\/SyncPlay\/Join$/i.test(path)) throw new NativeError("syncplay_join_not_allowed", 403);
       const status = response.status >= 400 && response.status <= 599 ? response.status : 502;
       if (response.status === 416 && response.headers.get("content-range")) reply.header("Content-Range", response.headers.get("content-range"));
       dispose();
       return reply.code(status).send({ error: { code: "jellyfin_request_failed", message: "Jellyfin could not complete this request." } });
     }
-    if (/^\/SyncPlay\/Join$/i.test(path)) viewer.joined = true;
-    if (/^\/SyncPlay\/Leave$/i.test(path)) viewer.joined = false;
     reply.code(response.status).header("Cache-Control", "no-store");
     if (request.method === "HEAD" || response.status === 204) { await response.body?.cancel(); dispose(); return reply.send(); }
     const contentType = response.headers.get("content-type") ?? "application/octet-stream";
@@ -315,7 +282,7 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
 
 export type PreparedNativeSocket = { socket: WebSocket; pending: Array<{ raw: RawData; binary: boolean }>; capture: (raw: RawData, binary: boolean) => void };
 
-/** Establish native session before the browser's open event can send SyncPlay/Join. */
+/** Establish the native metadata/reporting session before the browser opens. */
 export async function prepareNativeSocket(viewer: NativeViewer, signal?: AbortSignal): Promise<PreparedNativeSocket> {
   const base = new URL(viewer.connection.serverUrl.replace(/\/$/, "") + "/socket");
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
@@ -351,11 +318,14 @@ export function bridgeNativeSocket(service: NativePartyService, viewer: NativeVi
   viewer.lastSocketClose = 0;
   let ended = false;
   let alive = true;
+  let playbackPending = 0;
+  let unsubscribePlayback: (() => void) | undefined;
   const pending: string[] = [];
   const stop = () => {
     if (ended) return;
     ended = true;
     clearInterval(heartbeat);
+    unsubscribePlayback?.();
     viewer.aborters.delete(stop);
     upstream.terminate(); socket.terminate();
     void service.socketDisconnected(viewer);
@@ -368,10 +338,33 @@ export function bridgeNativeSocket(service: NativePartyService, viewer: NativeVi
     void service.authorize(viewer.capability).catch(stop);
   }, 15_000);
   heartbeat.unref();
+  const send = (MessageType: string, Data: unknown) => {
+    if (ended || socket.readyState !== WebSocket.OPEN || !service.active(viewer)) return;
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFER) { stop(); return; }
+    socket.send(JSON.stringify({ MessageType, Data }));
+  };
   const forward = (raw: RawData, binary: boolean) => {
-    if (binary || raw.toString().length > 16_384) { stop(); return; }
+    if (binary || Buffer.byteLength(raw.toString()) > 65_536) { stop(); return; }
     let message: unknown;
     try { message = JSON.parse(raw.toString()); } catch { stop(); return; }
+    if (record(message).MessageType === "ActivityPlaybackCommand") {
+      // Bound retained command bodies while upstream permission checks are slow.
+      if (++playbackPending > 64) { stop(); return; }
+      const command = record(message).Data;
+      void service.playback.submit(viewer, command).then((state) => {
+        // New commands already broadcast to all viewers. Retries need their own acknowledgement.
+        if (state.ack?.duplicate) send("ActivityPlaybackState", state);
+      }).catch(async (error: unknown) => {
+        const code = error instanceof NativeError ? error.code : "activity_command_failed";
+        let state;
+        try { state = await service.playback.get(viewer); } catch { /* Denied accounts receive no snapshot. */ }
+        const id = record(command).id;
+        send("ActivityPlaybackError", { ...(typeof id === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(id) ? { id } : {}),
+          code, ...(state ?? { clientId: viewer.deviceId }) });
+        if (!service.active(viewer)) stop();
+      }).finally(() => { playbackPending--; });
+      return;
+    }
     // Never subscribe to other sessions, scheduled tasks or administrative events.
     if (!["KeepAlive", "Ping"].includes(String(record(message).MessageType))) return;
     const text = JSON.stringify(message);
@@ -397,4 +390,10 @@ export function bridgeNativeSocket(service: NativePartyService, viewer: NativeVi
   for (const { raw, binary } of prepared.pending) upstreamMessage(raw, binary);
   prepared.pending.length = 0;
   if (upstream.readyState !== WebSocket.OPEN) stop();
+  if (!ended) void service.playback.connect(viewer, (state) => send("ActivityPlaybackState", state)).then((unsubscribe) => {
+    if (ended) unsubscribe(); else unsubscribePlayback = unsubscribe;
+  }).catch((error: unknown) => {
+    send("ActivityPlaybackError", { code: error instanceof NativeError ? error.code : "activity_command_failed", clientId: viewer.deviceId });
+    stop();
+  });
 }
