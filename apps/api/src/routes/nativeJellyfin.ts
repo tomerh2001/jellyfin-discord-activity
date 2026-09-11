@@ -73,6 +73,23 @@ export const nativeJellyfinRoutes: FastifyPluginAsync = async (app) => {
     pending.release();
     bridgeNativeSocket(service, pending.viewer, socket, pending.upstream);
   });
+  app.route<{ Params: { capability: string } }>({
+    method: ["GET", "POST"], url: "/jf/:capability/Activity/Playback", bodyLimit: 65_536,
+    handler: async (request, reply) => {
+      let viewer: NativeViewer | undefined;
+      try {
+        viewer = await service.authorize(request.params.capability);
+        return request.method === "GET" ? await service.playback.get(viewer) : await service.playback.submit(viewer, request.body);
+      } catch (error) {
+        if (viewer && error instanceof NativeError) {
+          let state;
+          try { state = await service.playback.get(viewer); } catch { /* Never reveal state to a revoked or denied account. */ }
+          return reply.code(error.statusCode).send({ error: { code: error.code, message: "The watch party could not apply this change." }, ...state });
+        }
+        return nativeRouteError(error, reply);
+      }
+    }
+  });
   app.route<{ Params: { capability: string; "*": string } }>({
     method: ["GET", "HEAD", "POST", "DELETE"], url: "/jf/:capability/*",
     handler: async (request, reply) => {

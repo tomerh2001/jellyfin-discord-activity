@@ -62,15 +62,11 @@ test('Modern toolbar and video OSD use their native MUI watch-party button witho
     const compiled = ts.transpileModule(source, { compilerOptions: {
         module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022
     } }).outputText;
-    const called = []; const exports = {}; let isActive = false; let access = 'CreateAndJoinGroups';
+    const called = []; const exports = {}; let access = 'CreateAndJoinGroups'; let loggedIn = true;
     vm.runInNewContext(compiled, { exports, require(name) {
         if (name.startsWith('@mui/')) return { default: name };
         if (name === 'react') return { default: { createElement: (type, props, ...children) => ({ type, props, children }) }, useCallback: fn => fn };
-        if (name === '@jellyfin/sdk/lib/generated-client/models/sync-play-user-access-type') return { SyncPlayUserAccessType: { None: 'None' } };
-        if (name === 'hooks/useApi') return { useApi: () => ({ user: { Policy: { SyncPlayAccess: access } } }) };
-        if (name === 'apps/modern/features/syncPlay/hooks/useSyncPlay') return { useSyncPlay: () => ({ isActive }) };
-        if (name === 'components/pluginManager') return { pluginManager: { ofType: () => ['syncPlay'] } };
-        if (name === 'constants/pluginType') return { PluginType: { SyncPlay: 'SyncPlay' } };
+        if (name === 'hooks/useApi') return { useApi: () => ({ user: loggedIn ? { Policy: { SyncPlayAccess: access } } : null }) };
         if (name === 'discordActivity/runtime') return { openWatchMenu: () => { called.push('participants'); return 'party'; } };
         throw new Error(`Unexpected Modern watch control import: ${name}`);
     } });
@@ -80,14 +76,14 @@ test('Modern toolbar and video OSD use their native MUI watch-party button witho
     const button = nodes.find(node => node.type === '@mui/material/IconButton');
     assert.equal(button.props['aria-label'], 'Watch party');
     assert.equal(button.props['aria-haspopup'], 'true');
-    assert.equal(nodes.find(node => node.type === '@mui/material/Badge').props.invisible, true);
+    assert.equal(nodes.some(node => node.type === '@mui/material/Badge'), false, 'dormant SyncPlay status cannot misrepresent Activity membership');
     assert.equal(called.length, 0, 'rendering a toolbar cannot launch a party action');
     const anchor = { role: 'native-mui-button' };
     assert.equal(await button.props.onClick({ currentTarget: anchor }), 'party');
     assert.deepEqual(called, ['participants']);
-    isActive = true; nodes = render();
-    assert.equal(nodes.find(node => node.type === '@mui/material/Badge').props.invisible, false);
-    access = 'None'; assert.equal(exports.default(), null, 'native SyncPlay permission guard is preserved');
+    access = 'None'; nodes = render();
+    assert.ok(nodes.find(node => node.type === '@mui/material/IconButton'), 'participants remain accessible without upstream SyncPlay permission');
+    loggedIn = false; assert.equal(exports.default(), null, 'anonymous login has no watch-party control');
     for (const path of ['src/apps/modern/components/AppToolbar/index.tsx', 'src/apps/modern/routes/video/index.tsx']) {
         const parent = files.get(path);
         assert.ok(parent.includes('<SyncPlayButton />'));
@@ -232,4 +228,28 @@ test('direct account routes render the actual native login page before an accoun
     assert.equal(rendered.props.controller, 'session/login/index');
     assert.equal(rendered.props.view, 'session/login/index.html');
     assert.equal(rendered.props.isNowPlayingBarEnabled, false);
+});
+
+test('native mobile orientation calls retain the modern or legacy browser method receiver', async () => {
+    const source = (await patchedUpstream()).get('src/components/playback/playbackorientation.js');
+    const executable = source.replace(/^import .*;\n/gm, '');
+    for (const mode of ['modern', 'legacy']) {
+        const handlers = new Map(); const calls = [];
+        const orientation = {};
+        const screen = { orientation };
+        const receiver = mode === 'modern' ? orientation : screen;
+        receiver[mode === 'modern' ? 'lock' : 'lockOrientation'] = function (value) {
+            assert.equal(this, receiver); calls.push(['lock', value]); return Promise.resolve();
+        };
+        receiver[mode === 'modern' ? 'unlock' : 'unlockOrientation'] = function () {
+            assert.equal(this, receiver); calls.push(['unlock']);
+        };
+        vm.runInNewContext(executable, { window: { screen }, playbackManager: { isPlayingVideo: () => true },
+            layoutManager: { mobile: true }, Events: { on: (_target, event, handler) => handlers.set(event, handler) },
+            console: { error(error) { assert.fail(error); } } });
+        handlers.get('playbackstart')({}, { isLocalPlayer: true });
+        await new Promise(resolve => setImmediate(resolve));
+        handlers.get('playbackstop')({}, {});
+        assert.deepEqual(calls, [['lock', 'landscape'], ['unlock']], mode);
+    }
 });

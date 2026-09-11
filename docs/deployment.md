@@ -6,7 +6,7 @@ The published container serves the Activity, REST API, WebSocket endpoint, and m
 
 Copy `.env.example` to an untracked `.env`. Fill in the Discord IDs, keys, allowlists, public HTTPS/WSS URLs, and Jellyfin account configuration. `PUBLIC_DISCORD_CLIENT_ID` must match `DISCORD_CLIENT_ID`. Production requires `DEV_AUTH_MOCK=false`. Generic connections use `JELLYFIN_ALLOW_CUSTOM_SERVERS=true` with public HTTPS/DNS restrictions.
 
-The container runs as an unprivileged user. Its UID/GID can be remapped with Compose `user:`. Mount a writable persistent volume at `/data`; `DATABASE_URL=file:/data/app.db` places `jellyfin-connections.sqlite` and its encrypted tokens there. Set `LOG_DIR=/data/logs` for file logging, or leave it empty for Docker logs only. App sessions and live SyncPlay groups do not persist across restart.
+The container runs as an unprivileged user. Its UID/GID can be remapped with Compose `user:`. Mount a writable persistent volume at `/data`; `DATABASE_URL=file:/data/app.db` places `jellyfin-connections.sqlite` and its encrypted tokens there. Set `LOG_DIR=/data/logs` for file logging, or leave it empty for Docker logs only. App sessions and Activity playback timelines do not persist across service restart.
 
 Backend secrets support Docker secret files (the edge secret is required only in Cloudflare Worker mode):
 

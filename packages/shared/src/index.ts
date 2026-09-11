@@ -3,3 +3,4 @@ export * from "./env.js";
 export * from "./errors.js";
 export * from "./types.js";
 export * from "./nativeNavigation.js";
+export * from "./activityPlayback.js";
