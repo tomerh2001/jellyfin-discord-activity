@@ -1,5 +1,7 @@
+import { PLAYBACK_BLOCKED_EVENT } from './playbackPermission.js';
+
 /** Keep Jellyfin's player, queue and reporting, with Activity-owned timing. */
-export function createNativePlaybackAdapter({ playbackManager: manager, events, apiClient, baseUrl, createClient, onError, host = window }) {
+export function createNativePlaybackAdapter({ playbackManager: manager, events, apiClient, baseUrl, createClient, onError, host = window, now = () => Date.now() }) {
     const original = new Map();
     const installed = new Map();
     const items = new Map();
@@ -12,6 +14,10 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
     let endedEntry;
     let player;
     let buffered = false;
+    let playbackBlocked = false;
+    let readySince;
+    let failedPreparation;
+    let lastResume;
     let lastCorrection = 0;
     let automaticRate;
     let baseRate = 1;
@@ -20,7 +26,6 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
     let lastError;
     let preparationSequence = 0;
     const serverId = apiClient.serverId();
-    const now = () => Date.now();
     const getPlayer = () => manager.getCurrentPlayer();
     const position = () => {
         const current = getPlayer();
@@ -51,29 +56,40 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
 
     function seek(ticks) {
         if (!getPlayer()) return;
+        lastCorrection = now();
+        readySince = buffered ? undefined : now();
         ignoreSeek = { ticks, until: now() + 2000 };
         invoke('seek', ticks);
     }
 
-    function applyTimeline(state, { origin, type } = {}, force = false) {
+    // Native ranges already include the stream's transcoding offset, in ticks.
+    // A seek into an unloaded segment can restart buffering on every recovery.
+    const hasBuffer = ticks => manager.getBufferedRanges?.().some(range => range.start <= ticks && range.end >= ticks + 20_000_000) ?? false;
+
+    function applyTimeline(state, { origin, type, resumed } = {}, force = false) {
         const current = getPlayer();
         if (!current || preparing || entryKey(currentEntry(state)) !== activeEntry) return;
         const drift = state.positionTicks - position();
-        if (type === 'seek' || type === 'select' || force || (state.paused && Math.abs(drift) > 1_000_000)) {
+        // Returning to a mobile Activity can emit visibility, pageshow and
+        // online together. Give its first catch-up time to load.
+        const recovery = resumed && (lastResume == null || now() - lastResume >= 3000);
+        if (recovery) lastResume = now();
+        if (type === 'seek' || type === 'select' || recovery || force || (state.paused && Math.abs(drift) > 1_000_000)) {
             resetRate();
-            if (Math.abs(drift) > 100_000 || type === 'seek' || type === 'select') seek(state.positionTicks);
-        } else if (origin !== 'local' && !buffered && !state.paused) {
+            if (Math.abs(drift) > (recovery ? 2_500_000 : 100_000) || type === 'seek' || type === 'select') seek(state.positionTicks);
+        } else if (origin !== 'local' && !buffered && !state.paused && !manager.paused()) {
             const milliseconds = drift / 10_000;
-            if (Math.abs(milliseconds) > 1500 && now() - lastCorrection > 3000) {
+            const stable = readySince != null && now() - readySince >= 3000;
+            if (stable && Math.abs(milliseconds) > 1500 && now() - lastCorrection > 3000 && hasBuffer(state.positionTicks)) {
                 resetRate(); lastCorrection = now(); seek(state.positionTicks);
-            } else if (Math.abs(milliseconds) > 250 && Math.abs(milliseconds) <= 1500 && current.setPlaybackRate && current.getPlaybackRate) {
+            } else if (stable && Math.abs(milliseconds) > 250 && hasBuffer(position()) && current.setPlaybackRate && current.getPlaybackRate) {
                 if (automaticRate == null || current.getPlaybackRate() !== automaticRate) baseRate = current.getPlaybackRate() || 1;
                 automaticRate = baseRate * (milliseconds > 0 ? 1.03 : 0.97);
                 current.setPlaybackRate(automaticRate);
-            } else if (Math.abs(milliseconds) <= 150) resetRate();
+            } else if (!stable || !hasBuffer(position()) || Math.abs(milliseconds) <= 150) resetRate();
         }
         if (state.paused) { resetRate(); if (!manager.paused()) invoke('pause'); }
-        else if (manager.paused()) invoke('unpause');
+        else if (!playbackBlocked && manager.paused()) invoke('unpause');
     }
 
     async function hydrate(queue) {
@@ -116,11 +132,13 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         applyRepeat(state);
         if (!entry) {
             generation++; preparationSequence++; preparing = undefined; activeEntry = undefined; endedEntry = undefined;
+            failedPreparation = undefined; playbackBlocked = false; readySince = undefined; lastResume = undefined;
             resetRate();
             if (getPlayer()) void Promise.resolve(invoke('stop')).then(() => { if (!closed && desired === state) applyRepeat(state); }).catch(report);
             return;
         }
         if (preparing?.entry === identity) return;
+        if (failedPreparation?.entry !== identity) failedPreparation = undefined;
         if (activeEntry === identity && getPlayer()) {
             if (!sameQueue(manager._playQueueManager.getPlaylist(), state.queue)) {
                 const current = generation;
@@ -136,8 +154,16 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         const current = ++generation;
         const attempt = { entry: identity };
         preparing = attempt;
-        resetRate(); buffered = false;
+        resetRate(); buffered = false; playbackBlocked = false; readySince = undefined; lastResume = undefined;
         const isCurrent = () => !closed && current === generation && entryKey(currentEntry(desired)) === identity;
+        const failed = error => {
+            if (!isCurrent()) return;
+            preparing = undefined;
+            const attempts = (failedPreparation?.attempts || 0) + 1;
+            failedPreparation = { entry: identity, attempts, after: now() + 5000 * 2 ** (attempts - 1),
+                retryable: !['notallowederror', 'aborterror'].includes(String(error?.name || '').toLowerCase()) };
+            report(error);
+        };
         const begin = values => {
             if (!isCurrent()) return;
             const latest = snapshot() || desired;
@@ -148,7 +174,8 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
             return manager.activityPlayPrepared(values, options).then(() => {
                 if (!isCurrent()) return;
                 activeEntry = identity; endedEntry = undefined;
-                preparing = undefined;
+                preparing = undefined; failedPreparation = undefined;
+                if (!buffered && !manager.paused()) readySince = now();
                 apply(snapshot() || desired);
                 applyTimeline(snapshot() || desired, metadata, true);
             });
@@ -156,13 +183,9 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         // A local prepared queue reaches the native pipeline during the gesture,
         // before any command acknowledgement or remote participant response.
         if (state.queue.every(cached)) {
-            try { void Promise.resolve(begin(state.queue.map(value => items.get(value.id)))).catch(error => {
-                if (isCurrent()) { preparing = undefined; report(error); }
-            }); }
-            catch (error) { preparing = undefined; report(error); }
-        } else void hydrate(state.queue).then(begin).catch(error => {
-            if (isCurrent()) { preparing = undefined; report(error); }
-        });
+            try { void Promise.resolve(begin(state.queue.map(value => items.get(value.id)))).catch(failed); }
+            catch (error) { failed(error); }
+        } else void hydrate(state.queue).then(begin).catch(failed);
     }
 
     const client = createClient({ baseUrl, apiClient, apply, onError: report });
@@ -170,9 +193,18 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         original.set(name, manager[name]); installed.set(name, callback); manager[name] = callback;
     };
     const desiredPaused = () => snapshot()?.paused ?? manager.paused() ?? true;
+    const resumeLocal = () => {
+        nativeGestureUntil = 0; playbackBlocked = false;
+        // Keep play() inside the user's gesture, without changing the party's
+        // timeline to the interrupted device's older position.
+        try { return Promise.resolve(invoke('unpause')).catch(report); }
+        catch (error) { report(error); return Promise.resolve(); }
+    };
+    const canResumeLocally = () => getPlayer() && !desiredPaused() && activeEntry === entryKey(currentEntry(snapshot()));
     replace('pause', () => submit({ type: 'setPlayback', paused: true, positionTicks: position() }));
-    replace('unpause', () => submit({ type: 'setPlayback', paused: false, positionTicks: position() }));
-    replace('playPause', () => submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: position() }));
+    replace('unpause', () => canResumeLocally() ? resumeLocal() : submit({ type: 'setPlayback', paused: false, positionTicks: position() }));
+    replace('playPause', () => canResumeLocally() && manager.paused() ? resumeLocal()
+        : submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: position() }));
     replace('seek', ticks => submit({ type: 'seek', positionTicks: Math.max(0, Math.round(ticks)), paused: desiredPaused() }));
     replace('stop', () => submit({ type: 'stop' }));
     replace('setRepeatMode', repeatMode => submit({ type: 'setRepeatMode', repeatMode }));
@@ -246,6 +278,7 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
     };
     manager.activityPlayback = hook;
     const nativePausedChanged = () => {
+        if (manager.paused()) { readySince = undefined; resetRate(); }
         // Native fullscreen controls need their original gesture. Browser/OS
         // interruption and autoplay recovery are personal, never party commands.
         if (closed || preparing || buffered || now() > nativeGestureUntil || !nativeGestureUntil || !getPlayer() || !currentEntry(snapshot())) return;
@@ -253,8 +286,17 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         const paused = Boolean(manager.paused());
         if (paused !== desiredPaused()) void submit({ type: 'setPlayback', paused, positionTicks: position() });
     };
-    const playing = () => { buffered = false; if (!preparing && snapshot()) applyTimeline(snapshot(), { origin: 'reconcile' }); };
-    const waiting = () => { buffered = true; resetRate(); };
+    const playing = () => {
+        if (buffered || readySince == null) readySince = now();
+        buffered = false; playbackBlocked = false;
+        if (!preparing && snapshot()) applyTimeline(snapshot(), { origin: 'reconcile' });
+    };
+    const waiting = () => { buffered = true; readySince = undefined; resetRate(); };
+    const blocked = event => {
+        if (event.target?.matches?.('video.htmlvideoplayer, audio.htmlaudioplayer')) {
+            playbackBlocked = true; readySince = undefined; resetRate();
+        }
+    };
     const bind = () => {
         resetRate();
         if (player) for (const [name, handler] of [['pause', nativePausedChanged], ['unpause', nativePausedChanged], ['playing', playing], ['waiting', waiting]]) events.off(player, name, handler);
@@ -277,8 +319,12 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
     };
     for (const event of ['pointerdown', 'touchstart', 'keydown']) host.document.addEventListener(event, gesture, true);
     host.document.addEventListener('seeked', seeked, true);
+    host.document.addEventListener(PLAYBACK_BLOCKED_EVENT, blocked, true);
     const timer = host.setInterval(() => {
-        if (!closed && !preparing && !buffered && snapshot()) applyTimeline(snapshot(), { origin: 'reconcile' });
+        if (closed || preparing) return;
+        if (failedPreparation?.retryable && failedPreparation.attempts <= 3 && now() >= failedPreparation.after) {
+            apply(snapshot() || desired, { origin: 'retry' });
+        } else if (!buffered && snapshot()) applyTimeline(snapshot(), { origin: 'reconcile' });
     }, 1000);
     return {
         start: () => client.start(),
@@ -287,6 +333,7 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
             closed = true; generation++; preparationSequence++; preparing = undefined;
             client.dispose(); resetRate(); host.clearInterval(timer);
             host.document.removeEventListener('seeked', seeked, true);
+            host.document.removeEventListener(PLAYBACK_BLOCKED_EVENT, blocked, true);
             for (const event of ['pointerdown', 'touchstart', 'keydown']) host.document.removeEventListener(event, gesture, true);
             events.off(manager, 'playerchange', bind);
             if (player) for (const [name, handler] of [['pause', nativePausedChanged], ['unpause', nativePausedChanged], ['playing', playing], ['waiting', waiting]]) events.off(player, name, handler);

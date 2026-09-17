@@ -96,6 +96,26 @@ describe("Activity playback authority", () => {
     expect((await coordinator.get(actor)).snapshot).toMatchObject({ revision: 2, paused: true, positionTicks: 50 });
   });
 
+  it("identifies explicit seeks for other viewers without turning later snapshots into new commands", async () => {
+    const first = (await viewer()).actor; const second = (await viewer("second")).actor;
+    await connect(first); const remote = await connect(second);
+    await coordinator.submit(first, await command(first, 1, queue()));
+    const seek = await command(first, 2, { type: "seek", positionTicks: 900_000_000, paused: false });
+    const result = await coordinator.submit(first, seek);
+    expect(remote.states.at(-1)?.snapshot).toMatchObject({
+      positionTicks: 900_000_000, command: { id: seek.id, type: "seek", clientId: first.deviceId, sequence: 2 }
+    });
+    now += 3000;
+    const recovered = await coordinator.get(second);
+    expect(recovered.snapshot).toMatchObject({ revision: result.snapshot.revision, positionTicks: 930_000_000, command: result.snapshot.command });
+    const count = remote.states.length;
+    const duplicate = await coordinator.submit(first, seek);
+    expect(duplicate.ack?.duplicate).toBe(true);
+    expect(remote.states).toHaveLength(count);
+    await coordinator.submit(first, await command(first, 3, { type: "setPlayback", paused: true }));
+    expect(remote.states.at(-1)?.snapshot.command?.type).toBe("setPlayback");
+  });
+
   it("orders concurrent controls and preserves paused seeks without a buffering authority", async () => {
     const actor = (await viewer()).actor; await connect(actor);
     await coordinator.submit(actor, await command(actor, 1, queue()));
