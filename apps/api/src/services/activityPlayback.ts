@@ -154,14 +154,14 @@ export class ActivityPlaybackCoordinator {
       await this.service.authorize(viewer.capability);
       if (!viewer.joined || !viewer.sockets || this.states.get(viewer.partyId) !== state) throw new NativeError("native_player_not_connected", 409);
       next.revision++; if (queueChanged) next.queueRevision++;
-      next.command = { id: command.id, clientId, sequence: command.sequence };
+      next.command = { id: command.id, clientId, sequence: command.sequence, type: command.type };
       state.snapshot = next; state.anchor = anchor;
       const party = this.service.parties.get(viewer.partyId)!;
       party.queueItemIds = next.queue.map((entry) => entry.itemId);
       const playingId = next.queue[next.index]?.id;
       if (playingId) party.currentPlaylistItemId = playingId;
       else delete party.currentPlaylistItemId;
-      const ack: ActivityPlaybackAck = { ...next.command, revision: next.revision, duplicate: false };
+      const ack: ActivityPlaybackAck = { id: command.id, clientId, sequence: command.sequence, revision: next.revision, duplicate: false };
       result.ack = ack;
       const snapshot = this.project(state);
       for (const [member, listener] of state.listeners) {

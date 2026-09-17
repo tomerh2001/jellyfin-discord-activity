@@ -98,6 +98,9 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
     let offset = 0;
     let bestRoundTrip = Infinity;
     let refreshPending;
+    let refreshGeneration = 0;
+    let recoveryGeneration = 0;
+    let recoveryTimer;
     let stopTransport;
     let connected = false;
     const pending = new Map();
@@ -127,7 +130,7 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         }
         return projected(value, serverNow());
     }
-    function accept(data, origin = 'remote') {
+    function accept(data, origin = 'remote', reconcilePlayer = false, resumed = false) {
         if (disposed || !validSnapshot(data?.snapshot) || typeof data.clientId !== 'string') return;
         const snapshot = data.snapshot;
         const changedIdentity = clientId !== undefined && (clientId !== data.clientId || authoritative?.epoch !== snapshot.epoch);
@@ -153,10 +156,16 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         // A repeated revision may carry a newer projected position for clock recovery.
         const obsolete = authoritative && !changedIdentity && (snapshot.revision < authoritative.revision
             || (snapshot.revision === authoritative.revision && snapshot.serverTimeMs < authoritative.serverTimeMs));
+        const newRevision = !obsolete && (!authoritative || changedIdentity || snapshot.revision > authoritative.revision);
         if (!obsolete) authoritative = copy(snapshot);
         const previous = intended;
         intended = derive();
-        if (!equivalent(previous, intended, serverNow())) effects(intended, { origin: changedIdentity ? 'reconcile' : origin });
+        const pendingIntent = [...pending.values()].some(entry => entry.command.sequence > processedThrough
+            && entry.command.expectedQueueRevision === authoritative.queueRevision);
+        const type = newRevision && snapshot.command?.clientId !== clientId && !pendingIntent ? snapshot.command?.type : undefined;
+        if (reconcilePlayer || type === 'seek' || type === 'select' || !equivalent(previous, intended, serverNow())) effects(intended, {
+            origin: changedIdentity ? 'reconcile' : origin, ...(type ? { type } : {}), ...(resumed ? { resumed: true } : {})
+        });
     }
     function rejected(data) {
         if (disposed) return;
@@ -176,30 +185,55 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         if (disposed) return;
         const wasConnected = connected;
         connected = open;
+        if (!open) {
+            recoveryGeneration++;
+            clearTimer(recoveryTimer);
+        }
         if (!open && (wasConnected || pending.size)) {
             discardPending('Connection interrupted. Previous playback actions will not be replayed.');
             if (authoritative) onError('Connection interrupted. Reconnecting to the watch party…');
         }
-        if (open) void refresh().catch(() => {});
+        if (open) recover();
     }
-    function refresh() {
+    function recover() {
+        if (disposed) return;
+        const recovery = ++recoveryGeneration;
+        clearTimer(recoveryTimer);
+        // A mobile network transition invalidates the old clock sample too.
+        bestRoundTrip = Infinity;
+        const attempt = retries => {
+            if (disposed || recovery !== recoveryGeneration) return;
+            void refresh(true).catch(error => {
+                if (!disposed && recovery === recoveryGeneration && retries < 2 && !error?.code) {
+                    recoveryTimer = setTimer(() => attempt(retries + 1), 1000 * (retries + 1));
+                }
+            });
+        };
+        attempt(0);
+    }
+    function refresh(supersede = false) {
         if (disposed) return Promise.reject(new Error('This watch party connection has closed.'));
-        if (refreshPending) return refreshPending;
+        if (refreshPending && !supersede) return refreshPending;
+        const generation = ++refreshGeneration;
         const started = now();
-        refreshPending = transport.snapshot().then(data => {
-            if (disposed) return undefined;
+        const operation = transport.snapshot().then(data => {
+            if (disposed || generation !== refreshGeneration) return undefined;
             const roundTrip = Math.max(0, now() - started);
             if (validSnapshot(data?.snapshot) && roundTrip <= bestRoundTrip) {
                 bestRoundTrip = roundTrip;
                 offset = data.snapshot.serverTimeMs - (started + roundTrip / 2);
             }
-            accept(data, 'reconcile');
+            // The timeline can be unchanged while a suspended local player lost
+            // its media or an earlier episode preparation failed.
+            accept(data, 'reconcile', true, supersede);
             if (!authoritative) throw new Error('Could not read the current watch party.');
             return projected(intended, serverNow());
         }).catch(error => {
-            if (!disposed) onError(errorText(error));
+            if (disposed || generation !== refreshGeneration) return undefined;
+            onError(errorText(error));
             throw error;
-        }).finally(() => { refreshPending = undefined; });
+        }).finally(() => { if (refreshPending === operation) refreshPending = undefined; });
+        refreshPending = operation;
         return refreshPending;
     }
     function arm(entry) {
@@ -245,7 +279,7 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
     }
     return {
         start() {
-            if (!stopTransport) stopTransport = transport.subscribe(accept, rejected, status);
+            if (!stopTransport) stopTransport = transport.subscribe(accept, rejected, status, recover);
             connected = transport.isConnected();
             return refresh();
         },
@@ -255,6 +289,7 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         dispose() {
             if (disposed) return;
             disposed = true;
+            clearTimer(recoveryTimer);
             stopTransport?.();
             discardPending('The watch party connection has closed.');
             transport.dispose?.();
@@ -263,17 +298,28 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
 }
 
 /** Reuse Jellyfin's authenticated socket, including its normal reconnect lifecycle. */
-export function createActivityPlaybackTransport({ baseUrl, apiClient, fetchImpl = fetch }) {
+export function createActivityPlaybackTransport({ baseUrl, apiClient, fetchImpl = fetch, host = globalThis.window }) {
     const controller = new AbortController();
     return {
         isConnected: () => apiClient.isWebSocketOpen(),
-        subscribe(onState, onError, onStatus) {
+        subscribe(onState, onError, onStatus, onResume = () => {}) {
             const stop = apiClient.subscribe(['ActivityPlaybackState', 'ActivityPlaybackError'], message => {
                 if (message.MessageType === 'ActivityPlaybackState') onState(message.Data);
                 else onError(message.Data);
             });
             const stopStatus = apiClient._sdk.webSocket.onStatusChange(value => onStatus(value === 1));
-            return () => { stop(); stopStatus(); };
+            // Mobile webviews can resume without closing the SDK socket. Fetch
+            // current playback even when no websocket status change arrives.
+            const resumed = () => { if (host.document.visibilityState !== 'hidden') onResume(); };
+            host?.document.addEventListener('visibilitychange', resumed);
+            host?.addEventListener('pageshow', resumed);
+            host?.addEventListener('online', resumed);
+            return () => {
+                stop(); stopStatus();
+                host?.document.removeEventListener('visibilitychange', resumed);
+                host?.removeEventListener('pageshow', resumed);
+                host?.removeEventListener('online', resumed);
+            };
         },
         async snapshot() {
             const request = new AbortController();

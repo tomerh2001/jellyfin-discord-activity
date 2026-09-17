@@ -23,7 +23,7 @@ export type ActivityPlaybackSnapshot = {
   epoch: string; revision: number; queueRevision: number; queue: ActivityQueueEntry[];
   index: number; positionTicks: number; paused: boolean; serverTimeMs: number;
   repeatMode: z.infer<typeof repeatMode>;
-  command?: { id: string; clientId: string; sequence: number };
+  command?: { id: string; clientId: string; sequence: number; type: ActivityPlaybackCommand["type"] };
 };
 export type ActivityPlaybackAck = { id: string; clientId: string; sequence: number; revision: number; duplicate: boolean };
 export type ActivityPlaybackState = { snapshot: ActivityPlaybackSnapshot; clientId: string; sequence: number; ack?: ActivityPlaybackAck };

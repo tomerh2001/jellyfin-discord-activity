@@ -17,7 +17,7 @@ function fixture() {
     const timers = new Map();
     const transport = {
         isConnected: () => open,
-        subscribe: (state, error, status) => { handlers = { state, error, status }; return () => { handlers = undefined; }; },
+        subscribe: (state, error, status, resume) => { handlers = { state, error, status, resume }; return () => { handlers = undefined; }; },
         snapshot: async () => ({ snapshot: { ...source }, clientId: 'self' }),
         send: command => { if (!open) throw new Error('closed'); sent.push({ ...command }); }
     };
@@ -30,8 +30,9 @@ function fixture() {
         state: (snapshot, ack, sequence) => handlers.state({ snapshot, clientId: 'self', ...(ack ? { ack } : {}), ...(sequence === undefined ? {} : { sequence }) }),
         reject: data => handlers.error({ clientId: 'self', ...data }),
         status: value => { open = value; handlers.status(value); },
+        resume: () => handlers.resume(),
         current: () => source,
-        tick: async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); }
+        tick: () => new Promise(resolve => setImmediate(resolve))
     };
 }
 
@@ -137,6 +138,107 @@ test('connection recovery fetches a fresh snapshot and never replays old clicks'
     f.client.dispose();
 });
 
+test('mobile resume follows the current episode even when the socket never reported a disconnect', async () => {
+    const f = fixture(); await f.client.start();
+    f.source({ ...initial(), revision: 3, queueRevision: 2, index: 1, positionTicks: 90_000_000, paused: false });
+    f.resume(); await f.tick();
+    assert.equal(f.client.getSnapshot().index, 1);
+    assert.equal(f.effects.at(-1).state.positionTicks, 90_000_000);
+    assert.equal(f.effects.at(-1).metadata.origin, 'reconcile');
+    assert.equal(f.sent.length, 0);
+    f.client.dispose();
+});
+
+test('reconnect supersedes an in-flight snapshot and ignores its late former-epoch reply', async () => {
+    const f = fixture(); await f.client.start();
+    const requests = [];
+    f.transport.snapshot = () => new Promise(resolve => requests.push(resolve));
+    const oldRequest = f.client.refresh();
+    f.status(false); f.status(true);
+    assert.equal(requests.length, 2, 'reconnection must not reuse a pre-reconnection request');
+    requests[1]({ snapshot: { ...initial(), epoch: 'new-party', revision: 1, index: 1 }, clientId: 'self' });
+    await f.tick();
+    requests[0]({ snapshot: { ...initial(), epoch: 'former-party', revision: 10 }, clientId: 'self' });
+    await oldRequest;
+    assert.equal(f.client.getSnapshot().epoch, 'new-party');
+    assert.equal(f.client.getSnapshot().index, 1);
+    f.client.dispose();
+});
+
+test('snapshot recovery reapplies unchanged state to a suspended player without issuing a party command', async () => {
+    const f = fixture(); await f.client.start();
+    const previous = f.effects.length;
+    f.resume(); await f.tick();
+    assert.equal(f.effects.length, previous + 1);
+    assert.deepEqual(f.effects.at(-1).metadata, { origin: 'reconcile', resumed: true });
+    await f.client.refresh();
+    assert.deepEqual(f.effects.at(-1).metadata, { origin: 'reconcile' }, 'ordinary snapshots cannot repeatedly force catch-up');
+    assert.equal(f.sent.length, 0);
+    f.client.dispose();
+});
+
+test('a transient mobile resume failure retries within a bound and disposal cancels recovery', async () => {
+    const f = fixture(); await f.client.start();
+    let requests = 0;
+    f.transport.snapshot = async () => { requests++; throw new TypeError('network unavailable'); };
+    f.resume(); await f.tick();
+    assert.equal(requests, 1);
+    for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(f.timers.size, 1);
+        const callback = [...f.timers.values()][0]; f.timers.clear(); callback(); await f.tick();
+    }
+    assert.equal(requests, 3);
+    assert.equal(f.timers.size, 0, 'failed recovery must not poll forever');
+    f.resume(); await f.tick();
+    assert.equal(f.timers.size, 1);
+    f.client.dispose();
+    assert.equal(f.timers.size, 0);
+});
+
+test('authorization failures do not start mobile recovery retries', async () => {
+    const f = fixture(); await f.client.start();
+    f.transport.snapshot = async () => { throw Object.assign(new Error('expired'), { code: 'native_session_expired' }); };
+    f.resume(); await f.tick();
+    assert.equal(f.timers.size, 0);
+    f.client.dispose();
+});
+
+test('a new remote seek reaches the player once and repeated snapshots do not replay it', async () => {
+    const f = fixture(); await f.client.start();
+    const remote = { ...initial(), revision: 2, positionTicks: 400_000_000,
+        command: { id: 'remote-seek', clientId: 'other', sequence: 1, type: 'seek' } };
+    f.state(remote);
+    assert.deepEqual(f.effects.at(-1).metadata, { origin: 'remote', type: 'seek' });
+    const applied = f.effects.length;
+    f.state(remote);
+    assert.equal(f.effects.length, applied);
+    f.source(remote);
+    await f.client.refresh();
+    assert.deepEqual(f.effects.at(-1).metadata, { origin: 'reconcile' });
+    f.client.dispose();
+});
+
+test('an explicit remote seek is honored even inside the normal drift tolerance', async () => {
+    const f = fixture(); await f.client.start();
+    const applied = f.effects.length;
+    f.state({ ...initial(), revision: 2, positionTicks: 10_100_000,
+        command: { id: 'remote-short-seek', clientId: 'other', sequence: 1, type: 'seek' } });
+    assert.equal(f.effects.length, applied + 1);
+    assert.deepEqual(f.effects.at(-1).metadata, { origin: 'remote', type: 'seek' });
+    f.client.dispose();
+});
+
+test('a remote seek cannot replace the effect type of a newer pending local intent', async () => {
+    const f = fixture(); await f.client.start();
+    const seek = f.client.submit({ type: 'seek', positionTicks: 90_000_000, paused: true }).catch(() => {});
+    const applied = f.effects.length;
+    f.state({ ...initial(), revision: 2, positionTicks: 500_000_000,
+        command: { id: 'remote-seek', clientId: 'other', sequence: 1, type: 'seek' } });
+    assert.equal(f.effects.length, applied);
+    assert.equal(f.client.getSnapshot().positionTicks, 90_000_000);
+    f.client.dispose(); await seek;
+});
+
 test('an epoch replacement invalidates pending controls and old timers', async () => {
     const f = fixture(); await f.client.start();
     const pending = f.client.submit({ type: 'seek', positionTicks: 90_000_000, paused: false });
@@ -213,6 +315,31 @@ test('transport uses the existing authenticated native socket and capability-sco
     assert.equal(requests[0].options.cache, 'no-store');
     assert.deepEqual(states, ['snapshot']); assert.deepEqual(errors, ['error']); assert.deepEqual(statuses, [true, false]);
     stop(); transport.dispose(); assert.equal(unsubscribed, true);
+});
+
+test('transport refreshes on visible, pageshow and online without reconnecting a healthy socket', () => {
+    const host = new EventTarget();
+    host.document = Object.assign(new EventTarget(), { visibilityState: 'hidden' });
+    let resumes = 0;
+    let unsubscribed = 0;
+    const apiClient = { isWebSocketOpen: () => true, subscribe: () => () => { unsubscribed++; },
+        _sdk: { webSocket: { onStatusChange: () => () => { unsubscribed++; } } } };
+    const transport = createActivityPlaybackTransport({ apiClient, baseUrl: '/jf/test-capability', host });
+    const stop = transport.subscribe(() => {}, () => {}, () => {}, () => { resumes++; });
+    host.document.dispatchEvent(new Event('visibilitychange'));
+    host.dispatchEvent(new Event('online'));
+    assert.equal(resumes, 0, 'hidden documents wait until foregrounded');
+    host.document.visibilityState = 'visible';
+    host.document.dispatchEvent(new Event('visibilitychange'));
+    host.dispatchEvent(new Event('pageshow'));
+    host.dispatchEvent(new Event('online'));
+    assert.equal(resumes, 3);
+    stop(); transport.dispose();
+    host.document.dispatchEvent(new Event('visibilitychange'));
+    host.dispatchEvent(new Event('pageshow'));
+    host.dispatchEvent(new Event('online'));
+    assert.equal(resumes, 3, 'disposed clients must not respond to document events');
+    assert.equal(unsubscribed, 2);
 });
 
 
