@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import { loadEnv } from "../env.js";
-import { createAppSession, verifyAppToken } from "../services/appSession.js";
+import { createAppSession, renewActivityMembership, verifyAppToken } from "../services/appSession.js";
 import { sessionStore } from "../services/sessionStore.js";
 import { allowedDiscordActor, verifyDiscordActivityContext } from "../services/discord.js";
 
@@ -44,6 +44,41 @@ describe("production configuration", () => {
     expect(allowedDiscordActor(env, userId, guildId)).toBe(true);
     expect(allowedDiscordActor(env, userId, "unknown-guild")).toBe(false);
     expect(allowedDiscordActor(env, "555555555555555555")).toBe(true);
+  });
+
+  it("gives exact account revocations precedence over both allowlists", () => {
+    const env = loadEnv({ ...envInput, DISCORD_ALLOWED_USER_IDS: userId, DISCORD_DENIED_USER_IDS: ` ${userId},555555555555555555 ` });
+    expect(allowedDiscordActor(env, userId, guildId)).toBe(false);
+    expect(allowedDiscordActor(env, "555555555555555555", guildId)).toBe(false);
+    expect(allowedDiscordActor(env, "666666666666666666", guildId)).toBe(true);
+    expect(() => loadEnv({ ...envInput, DISCORD_DENIED_USER_IDS: "invalid" })).toThrow("DISCORD_DENIED_USER_IDS");
+  });
+});
+
+describe("account revocation", () => {
+  it("refuses new sessions and membership verification without contacting Discord", async () => {
+    const env = loadEnv({ ...envInput, DISCORD_DENIED_USER_IDS: userId });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createAppSession({ env, user: { id: userId, username: "Revoked" }, discordContext: context })).rejects.toThrow("invalid_session");
+    await expect(verifyDiscordActivityContext(env, context, userId)).rejects.toThrow("discord_actor_forbidden");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["api", "native"])("revokes an existing %s session immediately and notifies native listeners", async (entry) => {
+    const env = loadEnv({ ...envInput, NODE_ENV: "test", DEV_AUTH_MOCK: "true" });
+    const { session, appToken } = await createAppSession({ env, user: { id: userId, username: "Revoked" }, discordContext: context });
+    const listener = vi.fn();
+    const unsubscribe = sessionStore.onRevoke(listener);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    env.DISCORD_DENIED_USER_IDS = userId;
+    try {
+      await expect(entry === "api" ? verifyAppToken(env, appToken) : renewActivityMembership(env, session)).rejects.toThrow("invalid_session");
+      expect(sessionStore.getSession(session.id)).toBeUndefined();
+      expect(listener).toHaveBeenCalledWith(session.id);
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
   });
 });
 

@@ -2,7 +2,7 @@ import type { DiscordContext, DiscordUser } from "@app/shared";
 import { jwtVerify, SignJWT } from "jose";
 import { z } from "zod";
 import type { AppEnv } from "../env.js";
-import { allowedDiscordActor, verifyDiscordActivityContext } from "./discord.js";
+import { allowedDiscordActor, deniedDiscordActor, verifyDiscordActivityContext } from "./discord.js";
 import { generateId } from "./crypto.js";
 import { sessionStore, type AppSession } from "./sessionStore.js";
 
@@ -21,6 +21,7 @@ export async function createAppSession(input: {
   user: DiscordUser;
   discordContext?: DiscordContext;
 }): Promise<{ appToken: string; session: AppSession }> {
+  if (deniedDiscordActor(input.env, input.user.id)) throw new AppSessionError("invalid_session");
   const nowSeconds = Math.floor(Date.now() / 1000);
   const expiresAt = new Date((nowSeconds + input.env.APP_SESSION_TTL_SECONDS) * 1000);
   const sessionId = generateId();
@@ -52,6 +53,11 @@ export async function verifyAppToken(env: AppEnv, appToken: string): Promise<App
   const claims = appSessionClaimsSchema.parse(verified.payload);
   const session = sessionStore.getSession(claims.sid);
 
+  if (session?.discordUserId === claims.sub && deniedDiscordActor(env, session.discordUserId)) {
+    sessionStore.deleteSession(session.id);
+    throw new AppSessionError("invalid_session");
+  }
+
   if (!session || session.discordUserId !== claims.sub
     || !allowedDiscordActor(env, session.discordUserId, session.discordContext?.guildId)
     || (env.NODE_ENV === "production" && !session.discordContext)) {
@@ -67,6 +73,10 @@ const lastActivityCheck = new WeakMap<AppSession, number>();
 const activityChecks = new WeakMap<AppSession, Promise<void>>();
 
 export async function renewActivityMembership(env: AppEnv, session: AppSession): Promise<void> {
+  if (deniedDiscordActor(env, session.discordUserId)) {
+    sessionStore.deleteSession(session.id);
+    throw new AppSessionError("invalid_session");
+  }
   if ((env.DEV_AUTH_MOCK && env.NODE_ENV !== "production") || !session.discordContext) return;
   if (Date.now() - (lastActivityCheck.get(session) ?? session.createdAt.getTime()) < 60_000) return;
   let pending = activityChecks.get(session);

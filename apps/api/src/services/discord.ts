@@ -148,8 +148,13 @@ export class DiscordOAuthError extends Error {
   }
 }
 
-/** The allowlists are alternatives: a named user OR a participant in a named guild. */
+export function deniedDiscordActor(env: AppEnv, userId: string): boolean {
+  return env.DISCORD_DENIED_USER_IDS.split(",").some((id) => id.trim() === userId);
+}
+
+/** Explicit denials override both user and guild allowlists. */
 export function allowedDiscordActor(env: AppEnv, userId: string, guildId?: string): boolean {
+  if (deniedDiscordActor(env, userId)) return false;
   const parseIds = (raw: string) => raw.split(",").map((id) => id.trim()).filter(Boolean);
   const users = parseIds(env.DISCORD_ALLOWED_USER_IDS);
   const guilds = parseIds(env.DISCORD_ALLOWED_GUILD_IDS);
@@ -173,6 +178,7 @@ export async function verifyDiscordActivityContext(
   context: DiscordContext,
   userId: string
 ): Promise<DiscordContext> {
+  if (deniedDiscordActor(env, userId)) throw new DiscordActivityError("discord_actor_forbidden", 403);
   if (!env.DISCORD_BOT_TOKEN) throw new DiscordActivityError("discord_bot_not_configured", 503);
   let response: Awaited<ReturnType<typeof discordJson>>;
   try { response = await discordJson(
