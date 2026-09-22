@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AppEnv } from "../env.js";
 import { decryptString, encryptString, generateId } from "./crypto.js";
 import { sessionStore, type AppSession } from "./sessionStore.js";
+import { deniedDiscordActor } from "./discord.js";
 import { normalizeUpstreamUrl, readUpstreamJson, upstreamFetch, validateUpstream, type ValidatedUpstream } from "./upstreamPolicy.js";
 
 export type ConnectionDto = Readonly<{
@@ -186,6 +187,7 @@ export function jellyfinClientHeader(deviceId: string, accessToken?: string): st
 
 export async function connectWithPassword(env: AppEnv, session: AppSession,
   input: { serverUrl: string; username: string; password: string }, kind: "personal" | "community" = "personal"): Promise<ConnectionDto> {
+  if (deniedDiscordActor(env, session.discordUserId)) throw new ConnectionError("discord_actor_forbidden", "This account cannot access this server.", 403);
   const target = await validateUpstream(env, input.serverUrl);
   const server = await identifyServer(target); // Never send a password before validating destination and identity.
   const deviceId = `jellyfin-watch-login-${generateId()}`;
@@ -251,6 +253,7 @@ export async function connectCommunity(env: AppEnv, session: AppSession): Promis
 }
 
 function ownedConnection(env: AppEnv, discordUserId: string, connectionId: string, guildId?: string): ConnectionRecord {
+  if (deniedDiscordActor(env, discordUserId)) throw notFound();
   const record = new JellyfinConnectionStore(env).get(discordUserId, connectionId);
   if (!record) throw notFound();
   if (record.kind === "community" && (record.communityGuildId !== guildId

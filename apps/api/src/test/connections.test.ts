@@ -18,6 +18,17 @@ afterEach(async () => {
 });
 
 describe("saved Jellyfin connections", () => {
+  it("blocks revoked accounts from personal and shared credential access before contacting Jellyfin", async () => {
+    const f = await fixture({ JELLYFIN_AUTH_MODE: "shared", JELLYFIN_SHARED_USERNAME: "community", JELLYFIN_SHARED_PASSWORD: "private-community-password", DISCORD_ALLOWED_GUILD_IDS: "guild-one" });
+    const user = await actor(f.env, "revoked-user", "guild-one");
+    f.env.DISCORD_DENIED_USER_IDS = "revoked-user";
+    await expect(connectCommunity(f.env, user.session)).rejects.toThrow("discord_actor_forbidden");
+    await expect(connectWithPassword(f.env, user.session, { serverUrl: f.url, username: "demo", password: "private-password" })).rejects.toThrow("discord_actor_forbidden");
+    const response = await f.app.inject({ method: "POST", url: "/api/connections/community", headers: user.headers });
+    expect(response.statusCode).toBe(401);
+    expect(f.requests).toHaveLength(0);
+  });
+
   it("requires a live app session before any connection operation", async () => {
     const f = await fixture();
     for (const [method, url] of [["GET", "/api/connections"], ["POST", "/api/connections"],

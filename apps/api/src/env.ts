@@ -26,6 +26,7 @@ export const envSchema = z.object({
   DISCORD_PROXY_EDGE_SECRET: z.string().default(""),
   DISCORD_ALLOWED_GUILD_IDS: z.string().default(""),
   DISCORD_ALLOWED_USER_IDS: z.string().default(""),
+  DISCORD_DENIED_USER_IDS: z.string().default(""),
   DISCORD_CLIENT_SECRET: z.string().default("dev-client-secret"),
   DISCORD_REDIRECT_URI: z.string().url().default("http://localhost:3000/api/discord/callback"),
   APP_SESSION_SECRET: z.string().min(16).default("development-session-secret-change-me"),
@@ -71,6 +72,9 @@ export function loadEnv(input: NodeJS.ProcessEnv = process.env): AppEnv {
     const ids = `${env.DISCORD_ALLOWED_GUILD_IDS},${env.DISCORD_ALLOWED_USER_IDS}`.split(",").map((id) => id.trim()).filter(Boolean);
     if (!ids.length || ids.some((id) => !/^\d{17,20}$/.test(id))) {
       problems.push("Set DISCORD_ALLOWED_GUILD_IDS and/or DISCORD_ALLOWED_USER_IDS to valid Discord IDs");
+    }
+    if (env.DISCORD_DENIED_USER_IDS.split(",").map((id) => id.trim()).filter(Boolean).some((id) => !/^\d{17,20}$/.test(id))) {
+      problems.push("DISCORD_DENIED_USER_IDS must contain valid Discord IDs");
     }
     if (!env.PUBLIC_BASE_URL.startsWith("https://")) problems.push("PUBLIC_BASE_URL must use HTTPS");
     if (env.JELLYFIN_AUTH_MODE === "shared" && (!env.JELLYFIN_SHARED_USERNAME || !env.JELLYFIN_SHARED_PASSWORD)) {
