@@ -7,6 +7,13 @@ The upstream npm lockfile supplies dependency integrity. Output goes to `dist/`
 and the Activity API serves its `index.html` at the mapped origin's root.
 The native HashRouter owns navigation within the Activity document.
 
+Back is available on non-root browsing pages and in the video toolbar. A restored
+page with no previous Activity entry returns to Home. Use the HashRouter's
+`window.history.state.idx` to identify that boundary: `history.length` can include
+Discord's enclosing page and does not prove that the Activity can go back.
+Back cancels unfinished page navigation; account replacement also clears a
+pending Back listener and promise so later navigation cannot remain blocked.
+
 The build applies reproducible integration patches before compiling the upstream source:
 
 - Jellyfin 12's upstream **Modern** application supplies the responsive desktop
