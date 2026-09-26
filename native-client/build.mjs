@@ -16,6 +16,7 @@ import { patchAuthenticatedClient } from './authenticatedClientPatch.mjs';
 import { patchNativeViewLifecycle } from './viewLifecyclePatch.mjs';
 import { patchActivityPlayback } from './activityPlaybackPatch.mjs';
 import { patchBackNavigation } from './backNavigationPatch.mjs';
+import { patchHlsBuffer, patchHlsRecovery } from './hlsBufferPatch.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const upstream = JSON.parse(await readFile(path.join(root, 'upstream.json'), 'utf8'));
@@ -91,7 +92,9 @@ await replace('src/components/htmlMediaHelper.js',
                     elem.dispatchEvent(new Event('jellyfin-watch-playback-blocked', { bubbles: true }));
                     // Keep upstream recovery behavior; our adapter offers the gesture.`);
 const videoPlugin = path.join(source, 'src/plugins/htmlVideoPlayer/plugin.js');
-await writeFile(videoPlugin, patchVideoUnpause(await readFile(videoPlugin, 'utf8')));
+await writeFile(videoPlugin, patchHlsBuffer(patchVideoUnpause(await readFile(videoPlugin, 'utf8'))));
+const mediaHelper = path.join(source, 'src/components/htmlMediaHelper.js');
+await writeFile(mediaHelper, patchHlsRecovery(await readFile(mediaHelper, 'utf8')));
 await replace('src/plugins/syncPlay/core/Helper.js',
     `                    episodesResult.TotalRecordCount = episodesResult.Items.length;
                     resolve(episodesResult);`,

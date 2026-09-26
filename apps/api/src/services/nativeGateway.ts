@@ -6,6 +6,7 @@ import { upstreamWebSocketOptions } from "./upstreamPolicy.js";
 import { NativeError, nativeAuthorization, nativeSessionId, type NativePartyService, type NativeViewer } from "./nativeParty.js";
 import { isNativeQueuePath, nativeQueueShape } from "./nativeQueueDiagnostics.js";
 import { sendNativeText } from "./nativeResponse.js";
+import { nativeMediaChunks, nativeSegmentIdleTimeout } from "./nativeMediaStream.js";
 
 const ID = "[a-zA-Z0-9_-]{1,128}";
 const SECRET_KEYS = new Set(["apikey", "api_key", "access_token", "accesstoken", "token", "password", "pw", "authorization", "x-emby-token", "x-mediabrowser-token"]);
@@ -267,11 +268,24 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
     if (!response.body) { dispose(); return reply.send(); }
     const source = Readable.fromWeb(response.body as unknown as NodeReadableStream, { signal: controller.signal });
     const stream = Readable.from((async function* () {
-      try { for await (const chunk of source) { if (!service.active(viewer)) break; yield chunk as Buffer; } }
-      catch { throw new NativeError("native_stream_interrupted", 502); }
+      try { for await (const chunk of nativeMediaChunks(source, nativeSegmentIdleTimeout(path))) { if (!service.active(viewer)) break; yield chunk; } }
+      catch (error) { throw error instanceof NativeError ? error : new NativeError("native_stream_interrupted", 502); }
       finally { source.destroy(); dispose(); }
     })());
     stream.once("close", () => { source.destroy(); dispose(); });
+    stream.once("error", () => {
+      // Before any bytes leave, Fastify can still send its JSON error response.
+      // Headers copied from the media response must not frame that response.
+      if (!reply.raw.headersSent) {
+        for (const header of ["content-length", "content-range", "accept-ranges"]) {
+          reply.removeHeader(header);
+          // Fastify may already have staged the stream headers on ServerResponse.
+          reply.raw.removeHeader(header);
+        }
+        reply.type("application/json");
+        reply.raw.setHeader("content-type", "application/json");
+      }
+    });
     return reply.send(stream);
   } catch (error) {
     dispose();

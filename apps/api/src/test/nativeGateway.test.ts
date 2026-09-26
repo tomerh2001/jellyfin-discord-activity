@@ -15,6 +15,7 @@ import { sessionStore, type AppSession } from "../services/sessionStore.js";
 import { getNativePartyService, nativeSessionId, type NativePartyService, type NativeViewer } from "../services/nativeParty.js";
 import { allowNativeRequest, rewriteNativePlaylist, sanitizeNativeJson } from "../services/nativeGateway.js";
 import { validateUpstream } from "../services/upstreamPolicy.js";
+import { HLS_BODY_IDLE_TIMEOUT_MS } from "../services/nativeMediaStream.js";
 
 const ITEM = "11111111111111111111111111111111";
 const DENIED = "22222222222222222222222222222222";
@@ -115,6 +116,14 @@ beforeEach(async () => {
       }
       return reply.code(request.headers.range ? 206 : 200).header("Content-Range", "bytes 0-3/4").type("video/mp4").send(Buffer.from("data"));
     }
+    if (url.pathname.endsWith("/hls1/main/stalled.mp4")) {
+      reply.hijack();
+      reply.raw.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": "100", "Content-Range": "bytes 0-99/100", "Accept-Ranges": "bytes" });
+      reply.raw.flushHeaders();
+      if (url.searchParams.get("partial") === "true") reply.raw.write("first");
+      reply.raw.once("close", () => { slowTransferClosed = true; });
+      return;
+    }
     if (url.pathname.endsWith("/0.ts")) return reply.type("video/mp2t").send(Buffer.from("segment"));
     if (url.pathname === "/Sessions") return [{ Id: "other-session", DeviceId: "other" }, { Id: nativeSessionId({ deviceId: device(authorization) } as NativeViewer), NowPlayingItem: { Id: ITEM, Name: "Test movie" }, PlayState: { PositionTicks: 50_000_000, IsPaused: false } }];
     if (url.pathname.startsWith("/Sessions/")) return reply.code(204).send();
@@ -123,6 +132,12 @@ beforeEach(async () => {
   upstreamAddress = await upstream.listen({ host: "127.0.0.1", port: 0 });
   const env = loadEnv({ NODE_ENV: "test", DEV_AUTH_MOCK: "true", JELLYFIN_DEFAULT_SERVER_URL: upstreamAddress, DATABASE_URL: "file:/tmp/native-unused.db" });
   app = Fastify({ logger: false });
+  // Match production's object-shaped generic 5xx response, including streams.
+  app.setErrorHandler((error, _request, reply) => {
+    const { statusCode } = error as { statusCode?: number };
+    const status = statusCode && statusCode >= 400 && statusCode < 500 ? statusCode : 500;
+    return reply.code(status).send({ error: { code: status === 500 ? "internal_error" : "request_failed", message: "Request failed." } });
+  });
   app.decorate("envConfig", env); app.decorateRequest("appSession");
   service = getNativePartyService(app);
   const target = await validateUpstream(env, upstreamAddress);
@@ -972,4 +987,44 @@ describe("native command episode queues and account permissions", () => {
     expect(calls.some(call => call.path.startsWith("/SyncPlay/"))).toBe(false);
   });
 
+});
+
+describe("native segment inactivity recovery over HTTP", () => {
+  function shortWatchdog() {
+    const realTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
+      realTimeout(callback, delay === HLS_BODY_IDLE_TIMEOUT_MS ? 50 : delay, ...args)) as typeof setTimeout);
+  }
+
+  it("returns a retryable gateway error if a fragment body never starts", async () => {
+    const { data, viewer } = await launch();
+    const aborters = viewer.aborters.size;
+    shortWatchdog();
+    const response = await fetch(`${appAddress}${data.baseUrl}/Videos/${ITEM}/hls1/main/stalled.mp4`);
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("content-length")).not.toBe("100");
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("accept-ranges")).toBeNull();
+    expect(await response.json()).toEqual({ error: { code: "internal_error", message: "Request failed." } });
+    await eventually(() => slowTransferClosed);
+    expect(viewer.aborters.size).toBe(aborters);
+    expect(calls.filter(call => call.path.endsWith("/stalled.mp4"))).toHaveLength(1);
+  });
+
+  it("breaks a partial fragment without appending an error body or silently retrying it", async () => {
+    const { data, viewer } = await launch();
+    const aborters = viewer.aborters.size;
+    shortWatchdog();
+    const response = await fetch(`${appAddress}${data.baseUrl}/Videos/${ITEM}/hls1/main/stalled.mp4?partial=true`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("video/mp4");
+    expect(response.headers.get("content-length")).toBe("100");
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("first");
+    await expect(reader.read()).rejects.toThrow();
+    await eventually(() => slowTransferClosed);
+    expect(viewer.aborters.size).toBe(aborters);
+    expect(calls.filter(call => call.path.endsWith("/stalled.mp4"))).toHaveLength(1);
+  });
 });
