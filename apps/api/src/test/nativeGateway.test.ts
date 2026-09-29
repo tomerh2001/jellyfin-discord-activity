@@ -81,6 +81,7 @@ beforeEach(async () => {
     calls.push({ method: request.method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: request.body, authorization });
     if (url.pathname.startsWith("/SyncPlay/")) throw new Error("Upstream SyncPlay authority must never be invoked");
     const homeItem = { Id: ITEM, Type: "Episode", UserData: { Played: false, PlaybackPositionTicks: 90_000_000 } };
+    if (url.pathname === "/System/Endpoint") return { IsLocal: true, IsInNetwork: true, AccessToken: TOKEN };
     if (url.pathname === "/UserItems/Resume" || url.pathname === `/Users/${USER}/Items/Resume` || url.pathname === "/Shows/NextUp") return { Items: [homeItem], TotalRecordCount: 1 };
     if (url.pathname === "/Items/Latest" || url.pathname === `/Users/${USER}/Items/Latest`) return [homeItem];
     if (/^\/User(?:Favorite|Played)Items\//.test(url.pathname)) return { ...homeItem.UserData, AccessToken: TOKEN };
@@ -204,6 +205,14 @@ async function disconnectRenderer(current: Awaited<ReturnType<typeof launch>>) {
 }
 
 describe("native Jellyfin gateway", () => {
+  it("reports the Discord viewer as remote even when Jellyfin sees a local gateway", async () => {
+    const { data } = await launch();
+    const response = await app.inject({ url: `${data.baseUrl}/System/Endpoint` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ IsLocal: false, IsInNetwork: false });
+    expect(calls.some(call => call.path === "/System/Endpoint")).toBe(true);
+  });
+
   it("hands a disconnected solo native group to a newly verified instance without rebuilding its queue", async () => {
     const previous = await launch();
     await disconnectRenderer(previous);

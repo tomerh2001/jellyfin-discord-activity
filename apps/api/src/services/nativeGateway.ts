@@ -249,6 +249,10 @@ export async function proxyNativeRequest(service: NativePartyService, viewer: Na
       const text = await readBounded(response, MAX_JSON, controller.signal);
       let value: unknown;
       try { value = text ? JSON.parse(text) : null; } catch { throw new NativeError("native_invalid_json", 502); }
+      // Jellyfin sees the gateway's LAN connection, not the viewer's route
+      // through Discord. Native Web otherwise raises every bandwidth estimate
+      // to at least 140 Mbps, even when its end-to-end speed test is slower.
+      if (/^\/System\/Endpoint$/i.test(path)) value = { ...record(value), IsLocal: false, IsInNetwork: false };
       if (/^\/Sessions$/i.test(path)) value = Array.isArray(value) ? value.filter((s) => record(s).Id === nativeSessionId(viewer)) : [];
       const safe = sanitizeNativeJson(viewer, value);
       dispose();

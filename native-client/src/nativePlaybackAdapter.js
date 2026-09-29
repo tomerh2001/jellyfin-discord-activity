@@ -138,7 +138,9 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
             return;
         }
         if (preparing?.entry === identity) return;
-        if (failedPreparation?.entry !== identity) failedPreparation = undefined;
+        if (failedPreparation?.entry !== identity || (metadata.origin === 'local' && metadata.type === 'select')) failedPreparation = undefined;
+        // Socket refreshes and resume events must obey the same retry budget.
+        if (failedPreparation?.entry === identity && (!failedPreparation.retryable || failedPreparation.attempts > 3 || now() < failedPreparation.after)) return;
         if (activeEntry === identity && getPlayer()) {
             if (!sameQueue(manager._playQueueManager.getPlaylist(), state.queue)) {
                 const current = generation;
@@ -173,6 +175,9 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
                 activityIsCurrent: isCurrent, activityRetainTracks: Boolean(activeEntry || endedEntry) };
             return manager.activityPlayPrepared(values, options).then(() => {
                 if (!isCurrent()) return;
+                // Native cancellation must never look like a successful start:
+                // apply() would immediately prepare again without a retry bound.
+                if (!getPlayer()) throw new Error('Could not start playback on this device.');
                 activeEntry = identity; endedEntry = undefined;
                 preparing = undefined; failedPreparation = undefined;
                 if (!buffered && !manager.paused()) readySince = now();
@@ -193,6 +198,13 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         original.set(name, manager[name]); installed.set(name, callback); manager[name] = callback;
     };
     const desiredPaused = () => snapshot()?.paused ?? manager.paused() ?? true;
+    const controlPosition = () => {
+        const state = snapshot();
+        const ticks = position();
+        // Pause/resume is not a seek. A stalled viewer must not rewind everyone
+        // to its stale frame, including while an earlier catch-up seek loads.
+        return state && (buffered || state.positionTicks - ticks > 15_000_000) ? state.positionTicks : ticks;
+    };
     const resumeLocal = () => {
         nativeGestureUntil = 0; playbackBlocked = false;
         // Keep play() inside the user's gesture, without changing the party's
@@ -201,10 +213,10 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         catch (error) { report(error); return Promise.resolve(); }
     };
     const canResumeLocally = () => getPlayer() && !desiredPaused() && activeEntry === entryKey(currentEntry(snapshot()));
-    replace('pause', () => submit({ type: 'setPlayback', paused: true, positionTicks: position() }));
-    replace('unpause', () => canResumeLocally() ? resumeLocal() : submit({ type: 'setPlayback', paused: false, positionTicks: position() }));
+    replace('pause', () => submit({ type: 'setPlayback', paused: true, positionTicks: controlPosition() }));
+    replace('unpause', () => canResumeLocally() ? resumeLocal() : submit({ type: 'setPlayback', paused: false, positionTicks: controlPosition() }));
     replace('playPause', () => canResumeLocally() && manager.paused() ? resumeLocal()
-        : submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: position() }));
+        : submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: controlPosition() }));
     replace('seek', ticks => submit({ type: 'seek', positionTicks: Math.max(0, Math.round(ticks)), paused: desiredPaused() }));
     replace('stop', () => submit({ type: 'stop' }));
     replace('setRepeatMode', repeatMode => submit({ type: 'setRepeatMode', repeatMode }));
@@ -237,9 +249,17 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         beginPreparation: () => ++preparationSequence,
         isPreparationCurrent: value => !closed && value === preparationSequence,
         playPrepared(values, options) {
-            const queue = values.map(item => {
+            const queue = values.map((item, index) => {
                 const id = host.crypto.randomUUID();
-                items.set(id, { ...item, PlaylistItemId: id }); playOptions.set(id, { ...options });
+                const itemOptions = { ...options };
+                // A chosen version and numeric stream indices belong to one
+                // episode. Later episodes use native language/track matching.
+                if (index !== (options.startIndex || 0)) {
+                    delete itemOptions.mediaSourceId;
+                    delete itemOptions.audioStreamIndex;
+                    delete itemOptions.subtitleStreamIndex;
+                }
+                items.set(id, { ...item, PlaylistItemId: id }); playOptions.set(id, itemOptions);
                 return { id, itemId: item.Id };
             });
             return submit({ type: 'setQueue', queue, index: Math.min(options.startIndex || 0, queue.length - 1),
@@ -284,7 +304,7 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         if (closed || preparing || buffered || now() > nativeGestureUntil || !nativeGestureUntil || !getPlayer() || !currentEntry(snapshot())) return;
         nativeGestureUntil = 0;
         const paused = Boolean(manager.paused());
-        if (paused !== desiredPaused()) void submit({ type: 'setPlayback', paused, positionTicks: position() });
+        if (paused !== desiredPaused()) void submit({ type: 'setPlayback', paused, positionTicks: controlPosition() });
     };
     const playing = () => {
         if (buffered || readySince == null) readySince = now();
