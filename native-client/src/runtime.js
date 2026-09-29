@@ -290,7 +290,9 @@ function watchClient() {
         Events.off(client, 'websocketclose', disconnected);
     };
     client.ensureWebSocket();
-    return playback.start();
+    // Playback snapshot failures recover within the playback client; they must
+    // not clear a signed-in account or turn bootstrap into a rejoin prompt.
+    return playback.start().catch(() => {});
 }
 
 export async function finishDiscordBootstrap() {

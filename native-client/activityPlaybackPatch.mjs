@@ -83,7 +83,27 @@ export async function patchActivityPlayback(replace) {
         '                .then((bitrate) => {\n                    if (playOptions.activityIsCurrent?.() === false) return;\n                    return playAfterBitrateDetect');
     await replace(playback,
         '                        .catch(onPlaybackRejection);',
-        '                        .catch(error => { if (playOptions.activityIsCurrent?.() !== false) return onPlaybackRejection(error); });');
+        `                        .catch(error => {
+                            if (playOptions.activityIsCurrent) {
+                                if (!playOptions.activityIsCurrent()) return;
+                                cancelPlayback();
+                                throw error || new Error('Could not prepare playback on this device.');
+                            }
+                            return onPlaybackRejection(error);
+                        });`);
+    await replace(playback,
+        `                .catch(() => {
+                    if (playOptions.fullscreen) {
+                        loading.hide();
+                    }
+                });`,
+        `                .catch(error => {
+                    if (playOptions.fullscreen) {
+                        loading.hide();
+                    }
+                    // Consuming rejection made the Activity immediately retry forever.
+                    if (playOptions.activityIsCurrent?.()) throw error || new Error('Could not prepare playback on this device.');
+                });`);
     await replace(playback,
         '        function playAfterBitrateDetect(maxBitrate, item, playOptions, onPlaybackStartedFn, prevSource) {',
         '        function playAfterBitrateDetect(maxBitrate, item, playOptions, onPlaybackStartedFn, prevSource) {\n            if (playOptions.activityIsCurrent?.() === false) return Promise.resolve();');

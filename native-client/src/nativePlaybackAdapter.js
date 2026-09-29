@@ -138,7 +138,9 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
             return;
         }
         if (preparing?.entry === identity) return;
-        if (failedPreparation?.entry !== identity) failedPreparation = undefined;
+        if (failedPreparation?.entry !== identity || (metadata.origin === 'local' && metadata.type === 'select')) failedPreparation = undefined;
+        // Socket refreshes and resume events must obey the same retry budget.
+        if (failedPreparation?.entry === identity && (!failedPreparation.retryable || failedPreparation.attempts > 3 || now() < failedPreparation.after)) return;
         if (activeEntry === identity && getPlayer()) {
             if (!sameQueue(manager._playQueueManager.getPlaylist(), state.queue)) {
                 const current = generation;
@@ -173,6 +175,9 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
                 activityIsCurrent: isCurrent, activityRetainTracks: Boolean(activeEntry || endedEntry) };
             return manager.activityPlayPrepared(values, options).then(() => {
                 if (!isCurrent()) return;
+                // Native cancellation must never look like a successful start:
+                // apply() would immediately prepare again without a retry bound.
+                if (!getPlayer()) throw new Error('Could not start playback on this device.');
                 activeEntry = identity; endedEntry = undefined;
                 preparing = undefined; failedPreparation = undefined;
                 if (!buffered && !manager.paused()) readySince = now();
@@ -237,9 +242,17 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         beginPreparation: () => ++preparationSequence,
         isPreparationCurrent: value => !closed && value === preparationSequence,
         playPrepared(values, options) {
-            const queue = values.map(item => {
+            const queue = values.map((item, index) => {
                 const id = host.crypto.randomUUID();
-                items.set(id, { ...item, PlaylistItemId: id }); playOptions.set(id, { ...options });
+                const itemOptions = { ...options };
+                // A chosen version and numeric stream indices belong to one
+                // episode. Later episodes use native language/track matching.
+                if (index !== (options.startIndex || 0)) {
+                    delete itemOptions.mediaSourceId;
+                    delete itemOptions.audioStreamIndex;
+                    delete itemOptions.subtitleStreamIndex;
+                }
+                items.set(id, { ...item, PlaylistItemId: id }); playOptions.set(id, itemOptions);
                 return { id, itemId: item.Id };
             });
             return submit({ type: 'setQueue', queue, index: Math.min(options.startIndex || 0, queue.length - 1),

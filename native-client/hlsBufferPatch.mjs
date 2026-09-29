@@ -28,6 +28,55 @@ export function patchHlsRecovery(source) {
     if (source.includes('// hls.js retries transient segment responses within its bounded error')) {
         throw new Error('Upstream HLS fragment recovery patch anchor changed');
     }
+    source = replace(source, 'playWithPromise(elem, onErrorFn).then(resolve, function () {', `playWithPromise(elem, onErrorFn).then(() => {
+            // After playback starts, later fatal errors must reach the player
+            // event handler rather than rejecting an already-settled promise.
+            reject = null;
+            resolve();
+        }, function () {`, 'started playback error routing');
+    source = replace(source, 'export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {', `export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
+    // Fatal errors already exhausted hls.js's own retries. Bound explicit restarts.
+    let fatalNetworkRestarts = 0;
+    let healthyPlaybackSeconds = 0;
+    let lastPlaybackPosition = elem.currentTime || 0;
+    const resetProgress = () => {
+        healthyPlaybackSeconds = 0;
+        lastPlaybackPosition = elem.currentTime || 0;
+    };
+    const observeProgress = () => {
+        const position = elem.currentTime || 0;
+        const delta = position - lastPlaybackPosition;
+        lastPlaybackPosition = position;
+        if (elem.paused || elem.seeking || elem.readyState < 3 || delta <= 0 || delta > 2) {
+            healthyPlaybackSeconds = 0;
+            return;
+        }
+        healthyPlaybackSeconds += delta;
+        if (healthyPlaybackSeconds >= 30) {
+            fatalNetworkRestarts = 0;
+            healthyPlaybackSeconds = 0;
+        }
+    };
+    elem.addEventListener('timeupdate', observeProgress);
+    for (const event of ['waiting', 'seeking', 'pause']) elem.addEventListener(event, resetProgress);
+    hls.on(Hls.Events.DESTROYING, () => {
+        elem.removeEventListener('timeupdate', observeProgress);
+        for (const event of ['waiting', 'seeking', 'pause']) elem.removeEventListener(event, resetProgress);
+    });`, 'network retry budget');
+    source = replace(source, `                        console.debug('fatal network error encountered, try to recover');
+                        hls.startLoad();`, `                        resetProgress();
+                        if (fatalNetworkRestarts++ < 2) {
+                            console.debug('fatal network error encountered, try bounded recovery');
+                            hls.startLoad();
+                        } else {
+                            hls.destroy();
+                            if (reject) {
+                                reject(MediaError.NETWORK_ERROR);
+                                reject = null;
+                            } else {
+                                onErrorInternal(instance, MediaError.NETWORK_ERROR);
+                            }
+                        }`, 'fatal network recovery');
     const anchor = `        // try to recover network error
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR`;
     return replace(source, anchor, `        // hls.js retries transient segment responses within its bounded error

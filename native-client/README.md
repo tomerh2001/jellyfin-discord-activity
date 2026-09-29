@@ -226,6 +226,18 @@ and card rendering; its fixed application name remains **Jellyfin Watch**, and
 compact cards may omit the richer fields. See [Discord's Activity Rich Presence
 guide](https://docs.discord.com/developers/rich-presence/using-with-the-embedded-app-sdk).
 
+The gateway reports `/System/Endpoint` as remote. Jellyfin sees the gateway's
+local connection, while the viewer receives media through Discord. Passing
+`IsInNetwork: true` to native Web overrides a slow measured connection with a
+140 Mbps minimum; keep both `IsInNetwork` and `IsLocal` false so automatic quality
+uses the actual browser download test. This does not impose a fixed quality cap.
+
+Fatal HLS network errors already exhausted the library's own retry policy.
+Allow at most two explicit restarts, and renew that budget only after 30 seconds
+of progressing playback. Seeks, paused time and downloads alone are not evidence
+of recovery. A terminal failure reaches the native error flow instead of
+reloading the same fragment indefinitely.
+
 For browser diagnostics, never print native network logs or raw gateway paths:
 the `/jf/` path segment is a credential. A local HTTP smoke harness should load
 an actual response from the candidate origin. Intercepting the top-level

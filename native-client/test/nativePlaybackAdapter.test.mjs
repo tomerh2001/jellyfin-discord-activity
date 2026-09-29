@@ -386,3 +386,40 @@ test('a queue insertion during remote hydration cannot use the new index against
     assert.equal(prepared.values[prepared.options.startIndex].Id, 'one', 'the chosen entry remains one after its queue index changes');
     f.adapter.dispose();
 });
+
+test('next episode discards version and track ids chosen for the initial episode', async () => {
+    const f = await fixture();
+    void f.manager.activityPlayback.playPrepared([{ Id: 'one' }, { Id: 'two' }], {
+        startIndex: 0, mediaSourceId: 'one-version', audioStreamIndex: 2, subtitleStreamIndex: 4, maxBitrate: 8000000
+    });
+    const first = f.prepared.at(-1);
+    assert.equal(first.options.mediaSourceId, 'one-version');
+    assert.equal(first.options.audioStreamIndex, 2);
+    first.resolve(); await tick(); f.ack();
+    void f.manager.nextTrack();
+    const next = f.prepared.at(-1);
+    assert.equal(next.values[next.options.startIndex].Id, 'two');
+    assert.equal(next.options.mediaSourceId, undefined, 'an earlier version cannot be requested against another episode');
+    assert.equal(next.options.audioStreamIndex, undefined);
+    assert.equal(next.options.subtitleStreamIndex, undefined);
+    assert.equal(next.options.maxBitrate, 8000000);
+    assert.equal(next.options.activityRetainTracks, true, 'native language matching retains track preferences');
+    f.adapter.dispose();
+});
+
+test('native failure consumed as success cannot recursively prepare without a player', async () => {
+    const f = await fixture(); let attempts = 0;
+    f.manager.activityPlayPrepared = async () => { attempts++; };
+    f.begin(); await tick();
+    assert.equal(attempts, 1);
+    for (let i = 0; i < 20; i++) f.reconcile({ origin: 'reconcile', resumed: true });
+    await tick();
+    assert.equal(attempts, 1, 'refresh events cannot bypass backoff');
+    for (const ms of [5000, 10000, 20000, 60000]) {
+        f.advance(ms); f.runInterval(); await tick();
+    }
+    assert.equal(attempts, 4, 'initial attempt plus three automatic retries');
+    f.reconcile({ origin: 'reconcile', resumed: true }); await tick();
+    assert.equal(attempts, 4, 'refresh cannot reset the exhausted retry budget');
+    f.adapter.dispose();
+});

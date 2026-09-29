@@ -426,3 +426,66 @@ test('a pending repeat choice does not count elapsed playback twice after an ear
     await second;
     f.client.dispose();
 });
+
+test('initial snapshot network failure recovers without requiring a socket reconnect or rejoin', async () => {
+    const f = fixture(); let requests = 0;
+    f.transport.snapshot = async () => {
+        if (++requests === 1) throw new TypeError('temporary network outage');
+        return { snapshot: initial(), clientId: 'self' };
+    };
+    await assert.rejects(f.client.start(), /network outage/); await f.tick();
+    assert.equal(requests, 2);
+    assert.equal(f.client.getSnapshot().index, 0);
+    assert.equal(f.sent.length, 0);
+    f.client.dispose();
+});
+
+test('initial authorization failure does not retry an expired watch session', async () => {
+    const f = fixture(); let requests = 0;
+    f.transport.snapshot = async () => {
+        requests++;
+        throw Object.assign(new Error('expired'), { code: 'native_session_expired' });
+    };
+    await assert.rejects(f.client.start(), /expired/); await f.tick();
+    assert.equal(requests, 1);
+    assert.equal(f.timers.size, 0);
+    f.client.dispose();
+});
+
+test('startup and mobile recovery retry gateway failures and aborted requests with native error codes', async () => {
+    for (const error of [
+        Object.assign(new Error('upstream unavailable'), { statusCode: 502, code: 'jellyfin_request_failed' }),
+        Object.assign(new Error('rate limited'), { statusCode: 429, code: 'rate_limited' }),
+        new DOMException('request timed out', 'AbortError')
+    ]) {
+        for (const startup of [true, false]) {
+            const f = fixture();
+            if (!startup) await f.client.start();
+            let requests = 0;
+            f.transport.snapshot = async () => {
+                if (++requests === 1) throw error;
+                return { snapshot: initial(), clientId: 'self' };
+            };
+            if (startup) await assert.rejects(f.client.start());
+            else f.resume();
+            await f.tick();
+            if (!startup) {
+                assert.equal(f.timers.size, 1);
+                const retry = [...f.timers.values()][0]; f.timers.clear(); retry();
+                await f.tick();
+            }
+            assert.equal(requests, 2, error.name);
+            assert.equal(f.client.getSnapshot().index, 0);
+            f.client.dispose();
+        }
+    }
+});
+
+test('snapshot transport preserves HTTP status so transient failures can be retried safely', async () => {
+    for (const status of [401, 403, 429, 502]) {
+        const transport = createActivityPlaybackTransport({ baseUrl: '/jf/test-capability', apiClient: {},
+            fetchImpl: async () => ({ ok: false, status, json: async () => ({ error: { code: 'gateway_error' } }) }) });
+        await assert.rejects(transport.snapshot(), error => error.statusCode === status && error.code === 'gateway_error');
+        transport.dispose();
+    }
+});

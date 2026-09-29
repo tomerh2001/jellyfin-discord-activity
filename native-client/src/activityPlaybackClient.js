@@ -74,6 +74,14 @@ function equivalent(a, b, serverNow) {
     return Math.abs(projected(a, serverNow).positionTicks - projected(b, serverNow).positionTicks) < 2_500_000;
 }
 
+function retryableSnapshotError(error) {
+    const status = Number(error?.statusCode ?? error?.status);
+    if (status >= 500 || status === 408 || status === 429) return true;
+    if (status >= 400) return false;
+    if (['AbortError', 'TimeoutError'].includes(error?.name)) return true;
+    return !error?.code;
+}
+
 const messages = {
     activity_epoch_changed: 'This watch party changed. Reconnecting to its current playback…',
     activity_queue_changed: 'Someone changed the queue. Following the current episode.',
@@ -204,7 +212,7 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         const attempt = retries => {
             if (disposed || recovery !== recoveryGeneration) return;
             void refresh(true).catch(error => {
-                if (!disposed && recovery === recoveryGeneration && retries < 2 && !error?.code) {
+                if (!disposed && recovery === recoveryGeneration && retries < 2 && retryableSnapshotError(error)) {
                     recoveryTimer = setTimer(() => attempt(retries + 1), 1000 * (retries + 1));
                 }
             });
@@ -281,7 +289,11 @@ export function createActivityPlaybackClient({ baseUrl, apiClient, apply, onErro
         start() {
             if (!stopTransport) stopTransport = transport.subscribe(accept, rejected, status, recover);
             connected = transport.isConnected();
-            return refresh();
+            return refresh().catch(error => {
+                // The socket can already be open without a later recovery event.
+                if (!disposed && connected && retryableSnapshotError(error)) recover();
+                throw error;
+            });
         },
         submit,
         refresh,
@@ -333,6 +345,7 @@ export function createActivityPlaybackTransport({ baseUrl, apiClient, fetchImpl 
                 });
                 if (!response.ok) {
                     const error = new Error('Could not reconnect to the watch party.');
+                    error.statusCode = response.status;
                     error.code = (await response.json().catch(() => ({})))?.error?.code;
                     throw error;
                 }

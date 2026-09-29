@@ -64,10 +64,63 @@ test('transient segment server failures keep bounded HLS retries; terminal failu
         const handlers = new Map(); let destroyed = 0; let rejected = 0;
         const hls = { on: (event, fn) => handlers.set(event, fn), destroy: () => destroyed++,
             startLoad: () => assert.fail('must not add a manual retry loop') };
-        bind({}, hls, {}, () => {}, () => {}, () => rejected++);
+        bind({}, hls, { addEventListener() {}, removeEventListener() {} }, () => {}, () => {}, () => rejected++);
         handlers.get('error')('error', { type: 'network', details, fatal, response: { code } });
         assert.equal(destroyed, Number(shouldDestroy), `${code}/${details}/fatal=${fatal}`);
         assert.equal(rejected, Number(shouldDestroy));
     }
     assert.throws(() => patchHlsRecovery(source), /patch anchor changed/);
+});
+
+test('fatal network recovery is bounded and renewed only by sustained playback', async () => {
+    const source = patchHlsRecovery(await upstreamFile('src/components/htmlMediaHelper.js'));
+    const start = source.indexOf('export function bindEventsToHlsPlayer(');
+    const end = source.indexOf('\nexport function ', start + 1);
+    const Hls = { Events: { MANIFEST_PARSED: 'manifest', ERROR: 'error', DESTROYING: 'destroying' },
+        ErrorTypes: { NETWORK_ERROR: 'network', MEDIA_ERROR: 'media' }, ErrorDetails: { FRAG_LOAD_ERROR: 'fragLoadError' } };
+    const bind = new Function('Hls', 'MediaError', 'console', 'playWithPromise', 'onErrorInternal', 'handleHlsJsMediaError',
+        source.slice(start, end).replace('export function ', 'function ') + '\nreturn bindEventsToHlsPlayer;')(
+        Hls, { NETWORK_ERROR: 'network' }, { debug() {}, error() {} }, async () => {}, instance => instance.report(), assert.fail);
+    const setup = () => {
+        const handlers = new Map(); const elementHandlers = new Map();
+        let restarted = 0; let destroyed = 0; let rejected = 0; let reported = 0;
+        const elem = { currentTime: 0, paused: false, seeking: false, readyState: 4,
+            addEventListener: (name, fn) => elementHandlers.set(name, fn),
+            removeEventListener: (name, fn) => { if (elementHandlers.get(name) === fn) elementHandlers.delete(name); } };
+        const hls = { on: (name, fn) => handlers.set(name, fn), startLoad: () => restarted++,
+            destroy: () => { destroyed++; handlers.get('destroying')?.(); } };
+        bind({ report: () => reported++ }, hls, elem, () => {}, () => {}, () => rejected++);
+        return { elem, handlers, elementHandlers,
+            fail: () => handlers.get('error')('error', { type: 'network', details: 'fragLoadTimeOut', fatal: true }),
+            advance: seconds => { elem.currentTime += seconds; elementHandlers.get('timeupdate')?.(); },
+            counts: () => [restarted, destroyed, rejected, reported] };
+    };
+    const exhausted = setup();
+    exhausted.fail();
+    exhausted.advance(60); // A seek must not renew the restart budget.
+    exhausted.fail();
+    exhausted.fail();
+    assert.deepEqual(exhausted.counts(), [2, 1, 1, 0]);
+    assert.equal(exhausted.elementHandlers.size, 0, 'destroy removes progress listeners');
+    const playing = setup();
+    playing.handlers.get('manifest')();
+    await Promise.resolve();
+    playing.fail();
+    playing.fail();
+    playing.fail();
+    assert.deepEqual(playing.counts(), [2, 1, 0, 1], 'started playback reports fatal errors through the player');
+
+    const recovered = setup();
+    recovered.fail();
+    recovered.fail();
+    for (let i = 0; i < 29; i++) recovered.advance(1);
+    recovered.elementHandlers.get('waiting')();
+    for (let i = 0; i < 30; i++) recovered.advance(1);
+    recovered.fail();
+    assert.deepEqual(recovered.counts(), [3, 0, 0, 0], 'thirty progressing seconds renew the budget');
+    recovered.elem.paused = true;
+    for (let i = 0; i < 30; i++) recovered.advance(1);
+    recovered.fail();
+    recovered.fail();
+    assert.deepEqual(recovered.counts(), [4, 1, 1, 0], 'paused time cannot renew recovery');
 });

@@ -147,3 +147,28 @@ test('native ended handling advances an Activity without waiting for personal Au
         }
     }
 });
+
+test('an Activity PlaybackInfo failure rejects once instead of reporting a successful preparation', async () => {
+    const source = (await sources()).get('src/components/playback/playbackmanager.js');
+    const section = source.slice(source.indexOf('        function playInternal('), source.indexOf('        function cancelPlayback('));
+    for (const current of [true, false]) {
+        const error = new Response('', { status: 403 });
+        const calls = [];
+        const dependencies = {
+            self: {}, loading: { show() {}, hide() { calls.push('hide'); } },
+            normalizePlayOptions() {}, runInterceptors: async () => {},
+            detectBitrate: async () => 10000000,
+            playAfterBitrateDetect: async () => { throw error; },
+            cancelPlayback: () => calls.push('cancel'),
+            onInterceptorRejection: () => Promise.reject(),
+            onPlaybackRejection: () => { calls.push('modal'); return Promise.reject(); }
+        };
+        const play = new Function(...Object.keys(dependencies), section + '\nreturn playInternal;')(...Object.values(dependencies));
+        const operation = play({ MediaType: 'Video' }, { fullscreen: true, activityIsCurrent: () => current }, () => calls.push('started'));
+        if (current) await assert.rejects(operation, value => value === error);
+        else await operation;
+        assert.equal(calls.filter(value => value === 'cancel').length, current ? 1 : 0);
+        assert.ok(!calls.includes('modal'), 'Activity recovery owns the failure feedback');
+        assert.ok(!calls.includes('started'), 'a failed request cannot be a successful native start');
+    }
+});
