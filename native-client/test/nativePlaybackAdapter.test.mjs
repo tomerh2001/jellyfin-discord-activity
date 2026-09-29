@@ -423,3 +423,51 @@ test('native failure consumed as success cannot recursively prepare without a pl
     assert.equal(attempts, 4, 'refresh cannot reset the exhausted retry budget');
     f.adapter.dispose();
 });
+
+test('pause then play from a stalled or lagging viewer cannot rewind the party', async () => {
+    for (const waiting of [true, false]) {
+        for (const toggle of [true, false]) {
+            const f = await fixture(); await f.start(); f.ack();
+            f.advance(10000); f.setTicks(40000000);
+            if (waiting) f.events.trigger(f.player, 'waiting');
+            void f.manager[toggle ? 'playPause' : 'pause']();
+            assert.equal(f.commands.at(-1).positionTicks, 100000000, 'pause uses the party clock when local playback is behind');
+            assert.equal(f.core.getSnapshot().paused, true);
+            assert.equal(f.core.getSnapshot().positionTicks, 100000000);
+            assert.equal(f.paused, true);
+            // Native seeks complete asynchronously; resuming during catch-up
+            // must not send the stalled frame before the seek has completed.
+            f.setTicks(40000000);
+            void f.manager[toggle ? 'playPause' : 'unpause']();
+            assert.equal(f.commands.at(-1).positionTicks, 100000000);
+            assert.equal(f.core.getSnapshot().paused, false);
+            assert.equal(f.paused, false);
+            f.advance(1000);
+            assert.equal(f.core.getSnapshot().positionTicks, 110000000);
+            f.adapter.dispose();
+        }
+    }
+});
+
+test('normal pause keeps the nearby displayed frame and deliberate seeks still use the requested position', async () => {
+    const f = await fixture(); await f.start(); f.ack();
+    f.advance(10000); f.setTicks(95000000);
+    void f.manager.pause();
+    assert.equal(f.commands.at(-1).positionTicks, 95000000, 'normal playback preserves precise pause behavior');
+    f.events.trigger(f.player, 'waiting');
+    void f.manager.seek(20000000);
+    assert.equal(f.commands.at(-1).type, 'seek');
+    assert.equal(f.core.getSnapshot().positionTicks, 20000000, 'explicit seek remains an intentional timeline change');
+    f.adapter.dispose();
+});
+
+test('trusted native pause controls also preserve the party clock when local playback is behind', async () => {
+    const f = await fixture(); await f.start(); f.ack();
+    f.advance(10000); f.setTicks(40000000);
+    f.domHandlers.get('pointerdown')({ isTrusted: true, target: { closest: () => ({}) } });
+    f.physicalPause(true);
+    assert.equal(f.commands.at(-1).type, 'setPlayback');
+    assert.equal(f.commands.at(-1).paused, true);
+    assert.equal(f.commands.at(-1).positionTicks, 100000000);
+    f.adapter.dispose();
+});

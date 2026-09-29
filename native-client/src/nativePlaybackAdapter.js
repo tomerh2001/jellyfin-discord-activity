@@ -198,6 +198,13 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         original.set(name, manager[name]); installed.set(name, callback); manager[name] = callback;
     };
     const desiredPaused = () => snapshot()?.paused ?? manager.paused() ?? true;
+    const controlPosition = () => {
+        const state = snapshot();
+        const ticks = position();
+        // Pause/resume is not a seek. A stalled viewer must not rewind everyone
+        // to its stale frame, including while an earlier catch-up seek loads.
+        return state && (buffered || state.positionTicks - ticks > 15_000_000) ? state.positionTicks : ticks;
+    };
     const resumeLocal = () => {
         nativeGestureUntil = 0; playbackBlocked = false;
         // Keep play() inside the user's gesture, without changing the party's
@@ -206,10 +213,10 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         catch (error) { report(error); return Promise.resolve(); }
     };
     const canResumeLocally = () => getPlayer() && !desiredPaused() && activeEntry === entryKey(currentEntry(snapshot()));
-    replace('pause', () => submit({ type: 'setPlayback', paused: true, positionTicks: position() }));
-    replace('unpause', () => canResumeLocally() ? resumeLocal() : submit({ type: 'setPlayback', paused: false, positionTicks: position() }));
+    replace('pause', () => submit({ type: 'setPlayback', paused: true, positionTicks: controlPosition() }));
+    replace('unpause', () => canResumeLocally() ? resumeLocal() : submit({ type: 'setPlayback', paused: false, positionTicks: controlPosition() }));
     replace('playPause', () => canResumeLocally() && manager.paused() ? resumeLocal()
-        : submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: position() }));
+        : submit({ type: 'setPlayback', paused: !desiredPaused(), positionTicks: controlPosition() }));
     replace('seek', ticks => submit({ type: 'seek', positionTicks: Math.max(0, Math.round(ticks)), paused: desiredPaused() }));
     replace('stop', () => submit({ type: 'stop' }));
     replace('setRepeatMode', repeatMode => submit({ type: 'setRepeatMode', repeatMode }));
@@ -297,7 +304,7 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
         if (closed || preparing || buffered || now() > nativeGestureUntil || !nativeGestureUntil || !getPlayer() || !currentEntry(snapshot())) return;
         nativeGestureUntil = 0;
         const paused = Boolean(manager.paused());
-        if (paused !== desiredPaused()) void submit({ type: 'setPlayback', paused, positionTicks: position() });
+        if (paused !== desiredPaused()) void submit({ type: 'setPlayback', paused, positionTicks: controlPosition() });
     };
     const playing = () => {
         if (buffered || readySince == null) readySince = now();
