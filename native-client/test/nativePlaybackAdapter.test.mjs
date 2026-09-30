@@ -319,6 +319,49 @@ test('automatic episode-end checks the ended entry before advancing a replaced p
     f.adapter.dispose();
 });
 
+test('Back invalidates unfinished item expansion without stopping an already ready player', async () => {
+    for (const playing of [false, true]) {
+        const f = await fixture();
+        if (playing) await f.start();
+        const hook = f.manager.activityPlayback;
+        const preparation = hook.beginPreparation();
+        const commandCount = f.commands.length;
+        hook.cancelPendingPreparation();
+        assert.equal(hook.isPreparationCurrent(preparation), false);
+        assert.equal(f.commands.length, commandCount);
+        if (playing) assert.equal(f.paused, false);
+        f.adapter.dispose();
+    }
+});
+
+test('Back cancels a stream preparation so its late response cannot reopen playback', async () => {
+    const f = await fixture();
+    const old = f.begin();
+    void f.manager.activityPlayback.cancelPendingPreparation();
+    assert.equal(old.options.activityIsCurrent(), false);
+    assert.equal(f.commands.at(-1).type, 'stop');
+    assert.equal(f.core.getSnapshot().queue.length, 0);
+    old.resolve(); await tick();
+    assert.equal(f.effects.some(effect => effect[0] === 'started'), false);
+    assert.deepEqual(f.errors, []);
+    await f.start(['new']);
+    assert.deepEqual(f.effects.filter(effect => effect[0] === 'started'), [['started', 'new']]);
+    f.adapter.dispose();
+});
+
+test('Back cancels failed preparation retries before they can reopen the player', async () => {
+    const f = await fixture(); let calls = 0;
+    f.manager.getItemsForPlayback = async () => { calls++; throw new Error('Temporary failure'); };
+    f.remote({ queue: [{ id: 'entry', itemId: 'episode' }], index: 0, paused: false, queueRevision: 1 });
+    await tick();
+    void f.manager.activityPlayback.cancelPendingPreparation();
+    f.advance(30_000); f.runInterval(); await tick();
+    assert.equal(calls, 1);
+    assert.equal(f.commands.at(-1).type, 'stop');
+    assert.equal(f.core.getSnapshot().queue.length, 0);
+    f.adapter.dispose();
+});
+
 test('Stop and a remote title replacement invalidate native item translation still in flight', async () => {
     for (const action of ['stop', 'replace']) {
         const f = await fixture(); const hook = f.manager.activityPlayback;

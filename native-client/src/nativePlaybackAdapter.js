@@ -248,6 +248,17 @@ export function createNativePlaybackAdapter({ playbackManager: manager, events, 
     const hook = {
         beginPreparation: () => ++preparationSequence,
         isPreparationCurrent: value => !closed && value === preparationSequence,
+        cancelPendingPreparation() {
+            if (closed) return;
+            // Back cancels both item expansion and a stream still being opened.
+            // Otherwise its late completion can reopen the video after leaving.
+            preparationSequence++;
+            if (!preparing && !failedPreparation) return;
+            generation++; preparing = undefined; failedPreparation = undefined;
+            // Match native Back from the loaded player: stop the queued playback.
+            // Ordinary browsing with an already playing stream is unaffected here.
+            return submit({ type: 'stop' });
+        },
         playPrepared(values, options) {
             const queue = values.map((item, index) => {
                 const id = host.crypto.randomUUID();

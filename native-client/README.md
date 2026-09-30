@@ -8,11 +8,14 @@ and the Activity API serves its `index.html` at the mapped origin's root.
 The native HashRouter owns navigation within the Activity document.
 
 Back is available on non-root browsing pages and in the video toolbar. A restored
-page with no previous Activity entry returns to Home. Use the HashRouter's
-`window.history.state.idx` to identify that boundary: `history.length` can include
-Discord's enclosing page and does not prove that the Activity can go back.
-Back cancels unfinished page navigation; account replacement also clears a
-pending Back listener and promise so later navigation cannot remain blocked.
+page with no previous Activity entry returns to Home. The Activity records its
+own committed locations, including same-page dialog entries. Browser Back can
+traverse Discord's parent history even when the Activity's HashRouter index is
+positive, so internal Back returns to a recorded destination directly.
+Back cancels unfinished page and playback preparation so a late stream response
+cannot reopen the video after leaving. Dialog closing preserves pending playback.
+Account replacement also clears a pending Back listener and promise. Loading and
+revalidation updates do not count as completed navigation.
 
 The build applies reproducible integration patches before compiling the upstream source:
 
